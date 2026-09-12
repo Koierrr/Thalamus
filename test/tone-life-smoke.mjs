@@ -1,0 +1,139 @@
+// tone-life-smoke.mjs — "她怎么说话"的回归：时间窗（下午不说晚安）+ 关系分寸 + 主动消息上限
+// 用法：ELECTRON_RUN_AS_NODE=1 electron test/tone-life-smoke.mjs
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Life, windowOf, windowPhase, inWindowAt } from '../src/life.js';
+import { stageToneOf, proactiveLimitOf, Soul } from '../src/soul.js';
+
+let pass = 0, fail = 0;
+const ok = (c, n) => { if (c) { pass++; console.log('✅ ' + n); } else { fail++; console.log('❌ ' + n); } };
+const mk = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tone-'));
+const at = (h, m = 0) => new Date('2026-09-14T' + String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':00');
+
+// ── ① 时间窗工具（跨天正确）──
+const nightWin = windowOf(120, 60, 120); // 中心 02:00，睡前 1h ~ 睡后 2h
+ok(inWindowAt(120, nightWin), '02:00 在"晚安窗口"里');
+ok(inWindowAt(60, nightWin), '01:00（睡前 1 小时）在窗口里');
+ok(inWindowAt(240, nightWin), '04:00（睡后 2 小时）在窗口里');
+ok(!inWindowAt(14 * 60, nightWin), '14:00 不在晚安窗口里 ← 这就是你遇到的 bug');
+ok(windowPhase(14 * 60, nightWin) === 'after', '14:00 相对晚安窗口是"已错过"（不补发）');
+ok(windowPhase(20 * 60, windowOf(8 * 60, 0, 90)) === 'after', '20:00 相对早安窗口是"已错过"');
+ok(windowPhase(7 * 60, windowOf(8 * 60, 0, 90)) === 'before', '07:00 相对早安窗口是"还没到"');
+
+// ── ② 生活调度：下午 2 点启动 → 不补发早安/晚安 ──
+const fakeSoul = (record) => ({ proactive: async (kind) => { record.push(kind); return { chunks: ['x'], delaysMs: [0] }; } });
+const baseCfg = { life: { enabled: true, wake: '08:00', sleep: '02:00', morningOn: true, nightOn: true, pokesPerDay: 8, pokeWindow: ['10:00', '22:00'], nudgeMinutes: 60, nudgeMaxPerDay: 4, quietHours: '' } };
+let sentKinds = [];
+let dir = mk();
+let life = new Life({ dir, config: () => baseCfg, logger: () => {} });
+let out = await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(14) });
+ok(!sentKinds.includes('morning') && !sentKinds.includes('night'), '下午 14:00 启动：不补发早安、不补发晚安（实际发了：' + (sentKinds.join(',') || '无') + '）');
+const st = JSON.parse(fs.readFileSync(path.join(dir, 'life-state.json'), 'utf8'));
+ok(st.skipped && st.skipped.morning && /错过/.test(st.skipped.morning), '错过的原因写进状态里（后台/日志能查）：' + st.skipped.morning.slice(0, 24) + '…');
+
+// 早上 8:05 启动 → 发早安（在窗口里）
+sentKinds = []; dir = mk();
+life = new Life({ dir, config: () => baseCfg, logger: () => {} });
+await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(8, 5) });
+ok(sentKinds.includes('morning'), '早上 08:05 启动：发早安 ✅');
+
+// 凌晨 1:30 启动 → 发晚安（跨天窗口）
+sentKinds = []; dir = mk();
+life = new Life({ dir, config: () => baseCfg, logger: () => {} });
+await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(1, 30) });
+ok(sentKinds.includes('night'), '凌晨 01:30（睡前 1 小时）启动：发晚安 ✅（跨天判断正确）');
+
+// 睡着之后（03:30，睡后 1.5 小时）→ 不能再说晚安（她已经睡了）
+sentKinds = []; dir = mk();
+life = new Life({ dir, config: () => baseCfg, logger: () => {} });
+await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(3, 30) });
+ok(!sentKinds.includes('night'), '睡着之后（03:30）不会发晚安 —— 睡后不该再有"晚安"');
+const st3 = JSON.parse(fs.readFileSync(path.join(dir, 'life-state.json'), 'utf8'));
+ok(st3.night !== true, '而且不会被误标成今天已发过——今晚的窗口还留着（睡前会正常发）');
+
+// 安静时段：不发
+sentKinds = []; dir = mk();
+life = new Life({ dir, config: () => ({ life: { ...baseCfg.life, quietHours: '00:00-09:00' } }), logger: () => {} });
+await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(8, 5) });
+ok(!sentKinds.includes('morning'), '安静时段内不发任何消息');
+
+// ── ③ 关系阶段：刚认识就不主动 ──
+sentKinds = []; dir = mk();
+life = new Life({ dir, config: () => ({ life: { ...baseCfg.life, wake: '08:00', sleep: '02:00' } }), logger: () => {} });
+await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(14), overrides: { stageLimit: { affection: 0, morning: false, night: false, pokes: 0, nudges: 0 } } });
+ok(sentKinds.length === 0, '亲密度 0（刚认识）：她完全不主动（' + (sentKinds.join(',') || '一条都没发') + '）');
+const st2 = JSON.parse(fs.readFileSync(path.join(dir, 'life-state.json'), 'utf8'));
+ok(st2.skipped && /关系还没到/.test(String(st2.skipped.poke || '')), '原因写明"关系还没到"：' + String(st2.skipped.poke).slice(0, 30) + '…');
+
+// 熟人（20~40）：每天最多 1 条分享
+ok(proactiveLimitOf(10).pokes === 0 && proactiveLimitOf(30).pokes === 1 && proactiveLimitOf(50).pokes === 2 && proactiveLimitOf(60).pokes === 3, '主动上限随关系递增：0/1/2/3');
+ok(proactiveLimitOf(80) === null, '足够熟（≥70）→ 不再额外限制，按后台配置走');
+
+// ── ④ 分寸表：刚认识必须"客气、不撒娇、不叫昵称" ──
+const t0 = stageToneOf(0), t90 = stageToneOf(90);
+ok(t0.stage === '刚认识' && t0.forbid.includes('撒娇') && t0.forbid.includes('叫昵称/亲爱的'), '刚认识的分寸：禁止撒娇/叫昵称（' + t0.forbid.slice(0, 3).join('、') + '…）');
+ok(t0.intimacy < 20 && t90.intimacy > 80, '熟度随亲密度上升（' + t0.intimacy + ' → ' + t90.intimacy + '）');
+ok(/名字|哎/.test(t0.address), '刚认识的称呼是"名字/哎"，不是亲昵称呼：' + t0.address);
+ok(t90.forbid.length === 0, '恋人阶段不再有硬性禁止项');
+
+// ── ⑤ 提示词：不能出现"主人"这个角色标签；必须带今天的分寸 ──
+const soul = new Soul({ dir: mk(), router: { chat: async () => ({ content: '嗯' }), cfg: {} }, logger: () => {} });
+const sys = soul._systemPrompt({
+  persona: { name: '苏镜语', birthday: '2004-02-03', job: '律师', jobType: 'office', personaText: '上海做律师', interests: ['旅行'], quirks: { catchphrases: ['嗯'] }, traits: { warmth: 25, attachment: 20, sharpness: 64, orderliness: 73 }, assessments: { mbti: 'INTJ' }, relationship: { toOwner: '好朋友' } },
+  rel: { affection: 0, chats: 0, mood: 50 },
+  isOwner: true, memories: [], now: at(14), behavior: {}, today: { date: '2026-09-14' }, world: null,
+});
+ok(!/【主人】/.test(sys) && !/对方是【主人】/.test(sys), '提示词里不再有"【主人】"这个角色标签');
+ok(/绝对不要叫他「主人」/.test(sys), '明确禁止她叫"主人/老公/亲爱的"');
+ok(/【今天的分寸/.test(sys) && /刚认识/.test(sys), '提示词里带了"今天的分寸"（兜底表：刚认识）');
+ok(/14:00（下午）/.test(sys), '时间用 24 小时制 + 中文时段告诉了她：14:00（下午）');
+ok(/下午不要说早安/.test(sys), '并明确提醒她"下午不要说早安"');
+ok(/INTJ/.test(sys) && /依恋强度/.test(sys), 'INTJ 与六维仍在提示词里（性格锚点没丢）');
+// 世界引擎给了 tone → 以它为准
+const sys2 = soul._systemPrompt({
+  persona: { name: '苏镜语', traits: {}, assessments: {}, relationship: {}, interests: [] },
+  rel: { affection: 0, chats: 0, mood: 50 }, isOwner: true, memories: [], now: at(14), behavior: {},
+  today: { date: '2026-09-14' },
+  world: { forDate: '2026-09-14', tone: { intimacy: 5, address: '叫他先生', style: '非常客气', forbid: ['任何主动示好'], reason: '刚认识一周' } },
+});
+ok(/叫他先生/.test(sys2) && /非常客气/.test(sys2) && /刚认识一周/.test(sys2), '世界引擎判断的分寸优先生效（并写明理由）');
+// 世界引擎的 tone 不是今天的 → 不采用（防止用昨天/明天的分寸说话）
+const sys3 = soul._systemPrompt({
+  persona: { name: '苏镜语', traits: {}, assessments: {}, relationship: {}, interests: [] },
+  rel: { affection: 0, chats: 0, mood: 50 }, isOwner: true, memories: [], now: at(14), behavior: {},
+  today: { date: '2026-09-14' }, world: { forDate: '2026-09-13', tone: { intimacy: 99, address: '叫老公', style: '超甜', forbid: [] } },
+});
+ok(!/叫老公/.test(sys3), '昨天/明天的分寸不会被误用（只认 forDate 对得上的那份）');
+
+// ── ⑥ 打字节奏与话量（用户反馈"打字快得不像人""话多不像 INTJ"）──
+const soulP = new Soul({ dir: mk(), router: { chat: async () => ({ content: 'x' }), cfg: {} }, logger: () => {} });
+const short = soulP._planDelays(['嗯'], true, 'human', 1);
+const long = soulP._planDelays(['x'.repeat(40)], true, 'human', 1);
+ok(short[0] >= 400, '看到消息后先等一会儿（≥400ms），不是秒回（' + short[0] + 'ms）');
+ok(long[0] >= 400, '第一条也不是瞬发');
+const twoChunks = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'human', 1);
+ok(twoChunks.length === 2 && twoChunks[1] > 2000, '第二条要等"打完第一条"的时间（30 字 → ' + twoChunks[1] + 'ms）');
+ok(twoChunks[1] > short[0], '越长的消息等得越久（按字数算，不再固定几百毫秒）');
+ok(soulP._planDelays(['x'.repeat(200)], true, 'human', 1)[1] === undefined && soulP._planDelays(['x'.repeat(200), 'y'], true, 'human', 1)[1] <= 12000, '单条等待有上限（≤12 秒），不会等到天荒地老');
+const fast = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'instant', 1);
+const slow = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'slow', 1);
+ok(fast[0] < 1000 && slow[0] > 3000, '回复速度三档真的有区别（instant ' + fast[0] + 'ms / slow ' + slow[0] + 'ms）');
+
+const planIntj = soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, null, 0);
+const planWarm = soulP._talkPlan({ traits: { initiative: 80, warmth: 85 } }, null, 60);
+ok(planIntj.maxChunks === 1 && planIntj.maxChars <= 20, 'INTJ 型（温度/发起力低）话很少：最多 ' + planIntj.maxChunks + ' 条 / ' + planIntj.maxChars + ' 字');
+ok(planWarm.maxChunks >= 3 && planWarm.maxChars > planIntj.maxChars, '外向热情型可以说更多（' + planWarm.maxChunks + ' 条 / ' + planWarm.maxChars + ' 字）');
+ok(soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, { chunks: 3, maxChars: 50 }, 30).maxChunks === 3, '世界引擎给的话量可以覆盖性格默认值');
+// 提示词里必须写清"最多几条/每条几个字"，否则模型还是会长篇大论
+const sysTalk = soulP._systemPrompt({
+  persona: { name: '苏镜语', traits: { initiative: 44, warmth: 25 }, quirks: {}, interests: [], assessments: {}, relationship: {} },
+  rel: { affection: 0, chats: 0, mood: 50 }, isOwner: true, memories: [], now: at(14), behavior: {},
+  today: { date: '2026-09-14' }, world: null, talkPlan: planIntj,
+});
+ok(/这条最多 1 条消息、每条不超过 16 个字/.test(sysTalk), '提示词里写明了话量上限（防话唠）');
+ok(/严禁客服腔|AI腔/.test(sysTalk), '提示词里禁止客服腔/AI腔');
+ok(/不要主动延伸|能一个字解决/.test(sysTalk), '提示词里要求"有事说事、不主动延伸"');
+
+console.log(fail === 0 ? '\nTONE-LIFE ALL GREEN ✅  ' + pass + ' 项' : '\nTONE-LIFE 有失败 ❌ ' + fail + ' 项');
+process.exit(fail === 0 ? 0 : 1);

@@ -1,0 +1,54 @@
+# DSH bundle patch：《AI陪伴微信机器人》（dsh-wechat-companion）
+# 常驻服务：iLink 消息收发轮询 + 灵魂（人设/记忆/特殊关系）
+# + 生活调度（主动消息/作息）+ 后台 HTTP API + Settings 页签。
+# 热插拔：settings.yaml 的 wechat-companion.enabled（保存即生效）。
+
+- insert:
+    - id: wechat-companion
+      name: 'dsh-wechat-companion'
+      inject:
+        - settings
+        - sessions
+        - agents
+        - sessionPersistence
+        - agentDefaultModel
+        - commands
+        - tools
+        - attachments
+      config:
+        enabled: false          # 开机自启总开关（面板/斜杠命令可随时启停）
+        mediaEnabled: true      # 收发媒体（图片/文件/语音落盘）
+        dataDir: ''             # 状态目录（空 = ~/.dsh/wechat-companion）
+        defaultModel: ''        # 兜底对话模型（空= soul 引擎按配置路由）
+        defaultProvider: ''     # 兜底 DSH provider（空= 跟随全局）
+        defaultCwd: ''          # 会话工作目录（空 = ~/.dsh/wechat-companion/HerSpace）
+        ownerPeerId: ''         # 主人的机器人内部联系人ID（对她特殊的人，绑定后面板点选）
+        replyToAll: true        # 白名单之外是否也回复（ownerPeerId 永远特殊）
+        quietHours: ''          # 安静时段（如 01:00-07:30，她也要睡觉）
+        behavior:               # 聊天行为（后台「设置」页可调，热生效）
+          replySpeed: human     # human=拟人 | instant=秒回 | slow=慢热
+          chunkMax: 3           # 一次最多拆几条（1-5）
+          contextRounds: 16     # 每次回复携带的上下文轮数（2-60）
+        memory:                 # 记忆引擎（mem0 sidecar，127.0.0.1:43122）
+          extraction: cloud     # cloud=云端便宜模型提炼 | manual=纯手动
+          extractionModel: ''   # 提炼模型（空=用主对话模型）
+          extractionBaseUrl: '' # 提炼专用API（空=跟对话接口同一家）
+          extractionApiKey: ''  # 提炼专用Key（空=用对话接口的Key）
+          topK: 6               # 每次注入她脑中的记忆条数
+          extractEveryN: 1      # 每几轮对话提炼一次记忆（调大更省 token）
+        workshop:               # 人格工坊·女娲（空=跟对话接口同一家）
+          baseURL: ''
+          apiKey: ''
+          model: ''
+        media:                  # 媒体（生图/形象工坊为明日更新）
+          imageEnabled: true
+          reviewBeforeSend: false
+        channel:                # 通道（wxauto=PC接管，默认关，解封后手动开）
+          mode: clawbot
+          wxautoEnabled: false
+          wxautoUrl: 'http://127.0.0.1:43123'
+          wxautoDailyCap: 120
+        system:
+          pythonPath: ''        # 记忆引擎用的 python（空=PATH 里的 python）
+          autoStartEngine: true # DSH 启动时自动拉起记忆引擎
+          backupKeepDays: 7

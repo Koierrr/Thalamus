@@ -1,0 +1,1533 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>她的后台控制台</title>
+<style>
+*{box-sizing:border-box}
+:root{
+ --fs-1:15px;--fs-2:14px;--fs-3:13.5px;--fs-4:12.5px;
+ --ink:#1f2329;--ink-2:#4a5560;--ink-3:#7c8794;--brand:#07c160;--brand-d:#07994a;
+ --line:#e6e9ec;--line-2:#eef1f4;--bg:#f4f6f8;--soft:#f8fafb;
+}
+body{margin:0;font-family:system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif;font-size:var(--fs-2);line-height:1.55;background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+header{position:sticky;top:0;z-index:9;background:#fff;border-bottom:1px solid var(--line);padding:12px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+header b{font-size:16px;letter-spacing:.2px}
+header .mut{font-size:var(--fs-4);color:var(--ink-3)}
+header .sp{flex:1}
+header a{font-size:var(--fs-3);color:var(--brand);text-decoration:none;font-weight:500}
+nav{position:sticky;top:57px;z-index:8;background:#fff;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px;padding:9px 18px}
+nav button{font-family:inherit;font-size:var(--fs-3);padding:6px 14px;border-radius:999px;border:1px solid #dde2e7;background:#fff;cursor:pointer;color:var(--ink-2);transition:.15s}
+nav button:hover{border-color:#c9d2d9;color:var(--ink)}
+nav button.on{background:var(--brand);color:#fff;border-color:var(--brand);font-weight:500}
+main{max-width:1360px;margin:0 auto;padding:14px 16px 96px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+.card h3{margin:0;font-size:var(--fs-2);font-weight:600;color:var(--ink)}
+.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+/* 字段：左标签 + 右输入（标签固定宽度右对齐） */
+.f{display:flex;align-items:center;gap:12px;flex:1 1 340px;min-width:300px}
+.f>label{flex:0 0 120px;text-align:right;font-size:var(--fs-3);color:var(--ink-2);line-height:1.45}
+.f>input,.f>select,.f>textarea{flex:1 1 auto;min-width:0}
+.f.w-xs>input{max-width:96px}
+.f.w-sm>input{max-width:150px}
+.f.w-md>input,.f.w-md>select{max-width:100%}
+.f.w-lg>input,.f.w-lg>textarea,.f.w-lg>select{max-width:100%}
+input,select,textarea{font-family:inherit;font-size:var(--fs-2);padding:8px 11px;border:1px solid #dfe3e7;border-radius:8px;width:100%;background:#fff;color:var(--ink);transition:border-color .15s,box-shadow .15s}
+input:hover,select:hover,textarea:hover{border-color:#cfd6dc}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(7,193,96,.13)}
+textarea{resize:vertical;line-height:1.6;min-height:92px}
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand);margin:0;flex:none;cursor:pointer}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:24px;background:transparent;padding:0;border:0;cursor:pointer}
+input[type=range]:focus{box-shadow:none}
+input[type=range]::-webkit-slider-runnable-track{height:5px;border-radius:5px;background:#e5eaee}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:17px;height:17px;border-radius:50%;background:var(--brand);border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.22);margin-top:-6px}
+input[type=range]::-moz-range-track{height:5px;border-radius:5px;background:#e5eaee}
+input[type=range]::-moz-range-thumb{width:15px;height:15px;border:2px solid #fff;border-radius:50%;background:var(--brand)}
+button{font-family:inherit;font-size:var(--fs-3);padding:8px 15px;border-radius:8px;border:1px solid #dde2e7;background:#fff;cursor:pointer;color:var(--ink-2);transition:.15s;line-height:1}
+button:hover{border-color:#c9d2d9;color:var(--ink);background:#fbfcfd}
+button.pri{background:var(--brand);color:#fff;border-color:transparent;font-weight:500}
+button.pri:hover{background:var(--brand-d);color:#fff}
+button.dg{color:#c0392b}
+button.dg:hover{background:#fdf3f2;border-color:#f0c9c4}
+button:disabled{opacity:.45;cursor:default}
+.ok{color:#0a9c46;font-size:var(--fs-4);font-weight:500}
+.er{color:#c0392b;font-size:var(--fs-4);font-weight:500}
+.mut{color:var(--ink-3);font-size:var(--fs-4);line-height:1.6}
+.box{border:1px solid var(--line-2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--soft)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.dot{width:9px;height:9px;border-radius:99px;background:#c3c9cf;display:inline-block;flex:none}
+.dot.on{background:#0a9c46}
+.dot.pa{background:#e67e22}
+.chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{border:1px dashed #cdd5db;background:#fff;border-radius:999px;padding:4px 12px;font-size:var(--fs-4);cursor:pointer;color:var(--ink-2);font-family:inherit;transition:.15s}
+.chip:hover{border-color:var(--brand);color:var(--brand-d)}
+.chip.on{border-style:solid;color:var(--brand-d);border-color:var(--brand);background:#f2fbf6}
+img.qr{width:240px;height:240px;border:1px solid var(--line);border-radius:12px}
+#stopbtn{position:fixed;bottom:18px;right:18px;z-index:99;padding:11px 18px;border-radius:999px;font-size:var(--fs-3);box-shadow:0 4px 14px rgba(0,0,0,.12)}
+#stopbtn.paused{background:#e67e22;color:#fff;border-color:transparent}
+.chips::-webkit-scrollbar{width:8px}
+.chips::-webkit-scrollbar-track{background:#f0f2f5;border-radius:4px}
+.chips::-webkit-scrollbar-thumb{background:#c8ccd2;border-radius:4px}
+/* ── 目录与两级折叠 ── */
+.pageWrap{display:flex;gap:16px;align-items:flex-start}
+.toc{position:sticky;top:112px;width:184px;flex:none;background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px;font-size:var(--fs-3)}
+.toc>div:first-child{font-size:var(--fs-4);color:var(--ink-3);padding:4px 8px 6px}
+.toc a{display:block;padding:7px 10px;border-radius:8px;color:var(--ink-2);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:.15s}
+.toc a:hover{background:#f1f8f4;color:var(--brand-d)}
+.pageBody{flex:1;min-width:0}
+details.sec{background:#fff;border:1px solid var(--line);border-radius:12px;margin-bottom:12px;overflow:hidden}
+details.sec>summary{list-style:none;cursor:pointer;padding:12px 15px;display:flex;gap:10px;align-items:baseline;font-size:var(--fs-1);font-weight:600;color:var(--ink);user-select:none;background:var(--soft);transition:.15s}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary>span:first-child:before{content:'▸ ';color:#9aa0a8;font-weight:400}
+details.sec[open]>summary>span:first-child:before{content:'▾ '}
+details.sec>summary:hover{background:#f2f6f8}
+details.sec>summary .mut{font-weight:400;font-size:var(--fs-4)}
+.secBody{padding:12px 15px 15px;display:flex;flex-direction:column;gap:11px;border-top:1px solid var(--line-2)}
+details.item{border:1px solid var(--line-2);border-radius:10px;background:#fff}
+details.item>summary{list-style:none;cursor:pointer;padding:10px 12px;font-size:var(--fs-2);display:flex;gap:8px;align-items:baseline;user-select:none;transition:.15s}
+details.item>summary::-webkit-details-marker{display:none}
+details.item>summary>span:first-child:before{content:'+ ';color:var(--brand);font-weight:700}
+details.item[open]>summary>span:first-child:before{content:'− '}
+details.item>summary:hover{background:#f7fbf9}
+details.item[open]>summary{border-bottom:1px solid var(--line-2);font-weight:600}
+details.item>summary .mut{font-size:var(--fs-4)}
+.itemBody{padding:12px;display:flex;flex-direction:column;gap:10px}
+.secFoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px dashed #e9edf0;margin-top:2px;padding-top:11px}
+@media(max-width:900px){.toc{display:none}.pageWrap{display:block}.f>label{flex:0 0 96px}main{padding:12px 12px 90px}}
+
+/* ── 自适应多列字段：填满宽度，消灭大片留白 ── */
+.itemBody,.secBody,.card{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:11px 18px;align-items:center}
+.itemBody>*:not(.f):not(.row),.secBody>*:not(.f):not(.row),.card>*:not(.f):not(.row){grid-column:1/-1}
+.itemBody>.row,.secBody>.row,.card>.row{grid-column:1/-1}
+.itemBody>.grid,.secBody>.grid,.card>.grid{grid-column:1/-1}
+.f{min-width:0}
+.f.w-lg{grid-column:1/-1}
+/* ── 指标格 + 进度条 + 标签 ── */
+.metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;align-items:stretch}
+.metric{border:1px solid var(--line-2);border-radius:10px;padding:9px 11px;background:var(--soft);display:flex;flex-direction:column;gap:7px;justify-content:center}
+.metric .k{font-size:var(--fs-4);color:var(--ink-3)}
+.metric .v{font-size:16px;font-weight:600;color:var(--ink);line-height:1.25}
+.metric .v small{font-size:var(--fs-4);font-weight:400;color:var(--ink-3)}
+.bar{height:6px;border-radius:6px;background:#e8ecef;overflow:hidden;width:100%}
+.bar>i{display:block;height:100%;background:var(--brand);border-radius:6px;transition:width .3s}
+.bar.warn>i{background:#e6a23c}
+.bar.bad>i{background:#d9604b}
+.tag{display:inline-block;font-size:var(--fs-4);padding:2px 9px;border-radius:999px;background:#eaf7f0;color:#0a9c46;font-weight:500}
+.tag.warn{background:#fdf3e6;color:#b9770e}
+.tag.bad{background:#fdeeec;color:#c0392b}
+/* ── 表格（阶段阈值表等） ── */
+table.tbl{width:100%;border-collapse:collapse;font-size:var(--fs-4)}
+table.tbl th,table.tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line-2)}
+table.tbl th{color:var(--ink-3);font-weight:500}
+table.tbl tr.cur td{background:#f2fbf6;font-weight:600;color:var(--brand-d)}
+</style>
+</head>
+<body>
+<header>
+<b>她的后台控制台</b><span class=mut id=hdname></span><span class=sp></span>
+<span id=hdstop></span>
+<a href=/wechat-companion/room target=_blank>她的房间</a>
+</header>
+<nav id=nav></nav>
+<main id=main></main>
+<button id=stopbtn onclick=toggleStop()>…</button>
+<script>
+var CFG=null,MODELS={},TIMER=null,CUR='';
+function $(id){return document.getElementById(id)}
+function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+function api(m,p,b){return fetch('/wechat-companion/'+p,{method:m,headers:b?{'content-type':'application/json'}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(j){if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j})})}
+function card(t){var c=document.createElement('div');c.className='card';var h3=document.createElement('h3');h3.textContent=t;c.appendChild(h3);return c}
+function row(){var r=document.createElement('div');r.className='row';for(var i=0;i<arguments.length;i++)r.appendChild(arguments[i]);return r}
+function f(label,inp2,hint){var w=document.createElement('div');var t=(inp2&&inp2.tagName||'').toUpperCase();var tp=(inp2&&inp2.type)||'';var auto=(t==='TEXTAREA')?'lg':(/地址|路径|备注|描述|画像|背景|内容|搜索|监听|口令|口头禅|兴趣/.test(label)?'lg':((tp==='number'||tp==='range'||/年龄|次数|分钟|天数|上限|比例|概率/.test(label))?'xs':'md'));w.className='f w-'+(hint||auto);var lb=document.createElement('label');lb.textContent=label;w.appendChild(lb);w.appendChild(inp2);return w}
+function inp(v,onch,ph,type){var i=document.createElement('input');if(type)i.type=type;i.value=(v==null?'':v);if(ph)i.placeholder=ph;i.onchange=function(e){onch(e.target.value)};return i}
+function btn(t,cls,fn){var b=document.createElement('button');b.textContent=t;if(cls)b.className=cls;b.onclick=function(){fn(b)};return b}
+function mut(t){var m=document.createElement('div');m.className='mut';m.textContent=t;return m}
+function bx(){var d=document.createElement('div');d.className='box';return d}
+
+function tocFor(list){var t=document.createElement('aside');t.className='toc';var h=document.createElement('div');h.className='mut';h.style.padding='4px 8px';h.textContent='本页目录';t.appendChild(h);list.forEach(function(x){var a=document.createElement('a');a.href='#'+x.id;a.textContent=x.icon+' '+x.title;a.onclick=function(e){e.preventDefault();var el=$(x.id);if(el){el.open=true;el.scrollIntoView({behavior:'smooth',block:'start'})}};t.appendChild(a)});return t}
+function secBlock(id,icon,title,desc){var d=document.createElement('details');d.className='sec';d.id=id;d.open=true;var sm=document.createElement('summary');var t1=document.createElement('span');t1.textContent=icon+' '+title;sm.appendChild(t1);if(desc){var t2=document.createElement('span');t2.className='mut';t2.textContent=desc;sm.appendChild(t2)}d.appendChild(sm);var b=document.createElement('div');b.className='secBody';d.appendChild(b);return{el:d,body:b}}
+function metric(k,v,extra){var d=document.createElement('div');d.className='metric';var a=document.createElement('div');a.className='k';a.textContent=k;d.appendChild(a);var b=document.createElement('div');b.className='v';b.innerHTML=v;d.appendChild(b);if(extra)d.appendChild(extra);return d}
+function bar(pct,cls){var d=document.createElement('div');d.className='bar'+(cls?(' '+cls):'');var i=document.createElement('i');i.style.width=Math.max(0,Math.min(100,Number(pct)||0))+'%';d.appendChild(i);return d}
+function tagEl(text,cls){var e=document.createElement('span');e.className='tag'+(cls?(' '+cls):'');e.textContent=text;return e}
+function metricsWrap(){var d=document.createElement('div');d.className='metrics';return d}
+function tbl(headers,rows){var t=document.createElement('table');t.className='tbl';var tr=document.createElement('tr');headers.forEach(function(h){var th=document.createElement('th');th.textContent=h;tr.appendChild(th)});t.appendChild(tr);rows.forEach(function(r){var x=document.createElement('tr');if(r.cur)x.className='cur';r.cells.forEach(function(c2,i2){var td=document.createElement('td');td.textContent=String(c2);x.appendChild(td)});t.appendChild(x)});return t}
+function itemBlock(title,note){var d=document.createElement('details');d.className='item';var sm=document.createElement('summary');var t1=document.createElement('span');t1.textContent=title;sm.appendChild(t1);if(note){var t2=document.createElement('span');t2.className='mut';t2.textContent=note;sm.appendChild(t2)}d.appendChild(sm);var b=document.createElement('div');b.className='itemBody';d.appendChild(b);return{el:d,body:b}}
+/* 生日 → 星座/年龄（与 src/birthday.js 同一套规则；输入时实时显示，不等保存） */
+function bdayInfo(raw){
+ var s=String(raw==null?'':raw).trim().replace(/[年月]/g,'-').replace(/日/g,'').replace(/[./]/g,'-').replace(/\s+/g,'');
+ var Z=[[1,20,'水瓶座'],[2,19,'双鱼座'],[3,21,'白羊座'],[4,20,'金牛座'],[5,21,'双子座'],[6,22,'巨蟹座'],[7,23,'狮子座'],[8,23,'处女座'],[9,23,'天秤座'],[10,24,'天蝎座'],[11,22,'射手座'],[12,22,'摩羯座']];
+ if(!s) return {valid:false,age:null,zodiac:'',hasYear:false,iso:'',hint:'先填生日（例如 1999-03-14）'};
+ var m=s.match(/^(\d{4})[-\/]?(\d{1,2})[-\/]?(\d{1,2})$/), hasYear=true;
+ if(!m){m=s.match(/^(\d{1,2})[-\/]?(\d{1,2})$/);hasYear=false}
+ if(!m) return {valid:false,age:null,zodiac:'',hasYear:false,iso:'',hint:'看不懂这个写法，请用 1999-03-14（或只填 03-14，但那样算不出年龄）'};
+ var y=hasYear?Number(m[1]):null, mo=Number(m[m.length-2]), d=Number(m[m.length-1]);
+ if(!(mo>=1&&mo<=12)||!(d>=1&&d<=31)) return {valid:false,age:null,zodiac:'',hasYear:false,iso:'',hint:'月或日超出范围了'};
+ var z='';Z.forEach(function(x){if(mo===x[0]&&d>=x[1])z=x[2]});
+ if(!z) z=(mo===1?'摩羯座':Z[((mo-2)+12)%12][2]);
+ var age=null;
+ if(hasYear){var dd=new Date(),m2=dd.getMonth()+1,d2=dd.getDate();age=dd.getFullYear()-y;var bmo=(mo===2&&d===29)?3:mo,bd=(mo===2&&d===29)?1:d;if(m2<bmo||(m2===bmo&&d2<bd))age-=1}
+ var iso=(hasYear?String(y).padStart(4,'0')+'-':'')+String(mo).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+ return {valid:true,hasYear:hasYear,iso:iso,zodiac:z,age:age,hint:hasYear?'':'没填年份 → 只算得出星座，年龄要你自己填'};
+}
+function loadCfg(){return api('GET','panel/config').then(function(r){CFG=r.config||{};return CFG})}
+function drawStop(){var b=$('stopbtn');var p=!!(CFG&&CFG.paused);b.textContent=p?'已急停·点击解除':'急停';b.className=p?'paused':''}
+function toggleStop(){loadCfg().then(function(c){api('POST','panel/config',{paused:!c.paused}).then(function(r){CFG=r.config||CFG;drawStop()}).catch(function(){})}).catch(function(){})}
+function drawName(){api('GET','panel/persona').then(function(r){$('hdname').textContent='· '+((r.persona&&r.persona.name)||'她')}).catch(function(){})}
+
+/* ── 首页 = 连接+实况+试聊 ── */
+/* ── 首页（状态常显 · 分区可折叠） ── */
+function tHome(box){
+ box.innerHTML='';
+ var SECS=[
+  {id:'hm-conn',icon:'🔌',title:'连接与运行',desc:'启停 · 扫码绑定 · 连接自检'},
+  {id:'hm-today',icon:'☀️',title:'今天的她',desc:'每日随机 · 人设自动定基调'},
+  {id:'hm-live',icon:'📡',title:'实况直播',desc:'4 秒刷新'},
+  {id:'hm-test',icon:'💬',title:'试聊',desc:'真实模型，不真的发出去'}
+ ];
+ var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+ wrap.appendChild(tocFor(SECS));
+ var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+ body.appendChild(mut('这一页是"她现在怎么样"：连接通不通、今天是什么状态、正在发生什么。状态类内容默认展开，方便一眼看到。'));
+ var OBJ={},S={};
+ SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);OBJ[x.id]=sb.el;S[x.id]=sb.body;body.appendChild(sb.el)});
+ OBJ['hm-test'].open=false;
+ tStatus(S['hm-conn']);
+ tToday(S['hm-today']);
+ tLiveFeed(S['hm-live']);
+ tTest(S['hm-test']);
+}
+
+/* ── 你们 = 关系阶段 + 称呼 + 她的日记 + 画像 + 名单（分区折叠） ── */
+function tRelation(box){
+ box.innerHTML='';
+ var SECS=[
+  {id:'rel-stage',icon:'💞',title:'关系阶段',desc:'亲密度推着阶段自动走'},
+  {id:'rel-call',icon:'🏷️',title:'称呼与关系',desc:'她怎么叫你 · 你叫她什么'},
+  {id:'rel-list',icon:'👥',title:'名单与范围',desc:'主人 · 黑名单 · 回复范围'}
+ ];
+ var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+ wrap.appendChild(tocFor(SECS));
+ var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+ var st=mut('这里是她和你之间的关系：阶段、称呼、她的日记、她对你的印象、以及谁能跟她说话。');body.appendChild(st);
+ var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+
+ /* ① 关系阶段 */
+ var r1=itemBlock('当前阶段','她与你的关系走到哪一步');r1.el.open=true;S['rel-stage'].appendChild(r1.el);
+ var mw=metricsWrap();r1.body.appendChild(mw);
+ var rnote=mut('读取中…');r1.body.appendChild(rnote);
+ var rtbl=document.createElement('div');rtbl.style.gridColumn='1/-1';r1.body.appendChild(rtbl);
+ r1.body.appendChild(mut('阶段只由亲密度决定，不用手动设置；她对你的称呼会跟着阶段自然变（刚认识叫名字 → 暧昧开始试探昵称 → 恋人用专属昵称）。今天实际用的"分寸"（熟度/语气/禁止项）在「世界 → 今天的分寸」里看。'));
+ api('GET','panel/today').then(function(r0){
+  var R=(r0||{}).relation||{};var aff=R.affection||0;
+  mw.innerHTML='';
+  mw.appendChild(metric('当前阶段','<span class="tag">'+esc(R.stage||'刚认识')+'</span>'));
+  mw.appendChild(metric('亲密度',aff+' <small>/100</small>',bar(aff)));
+  mw.appendChild(metric('她的心情',(R.mood||0)+' <small>/100</small>',bar(R.mood||0)));
+  mw.appendChild(metric('已聊',(R.chats||0)+' <small>次</small>'));
+  var days=R.firstSeen?Math.max(1,Math.round((Date.now()-R.firstSeen)/86400000)):0;
+  mw.appendChild(metric('认识',(days?days+' <small>天</small>':'<small>还没开始</small>')));
+  mw.appendChild(metric('称呼方式',esc(R.callHint||'—')));
+  if(!R.hasOwner){rnote.className='er';rnote.textContent='⚠️ 还没指定主人：去下面「名单与范围」里点一下你的 ID 戴上👑，这里才会按主人算关系。';}
+  else if(R.next){rnote.className='mut';rnote.textContent='现在处在「'+(R.stage||'')+'」；再涨 '+R.next.need+' 点亲密度就进入「'+R.next.label+'」。';}
+  else {rnote.className='ok';rnote.textContent='已经走到最后一段「恋人」了。';}
+  var rows=(R.stages||[]).map(function(s2){return {cells:[s2.min, s2.label, s2.callHint], cur:(s2.label===R.stage)}});
+  if(rows.length){rtbl.innerHTML='';rtbl.appendChild(tbl(['亲密度门槛','阶段','称呼方式'],rows));}
+ }).catch(function(e){rnote.className='er';rnote.textContent='关系信息读取失败：'+e.message});
+ /* ①b 所有联系人 */
+ var rc2=itemBlock('所有联系人','她也跟别人来往——这里是每个人的数据');S['rel-stage'].appendChild(rc2.el);
+ var rclist=mut('加载中…');rc2.body.appendChild(rclist);
+ Promise.all([api('GET','panel/memory'),api('GET','panel/config')]).then(function(rs){
+  var REL=(rs[0]||{}).relations||{};var o=((rs[1]||{}).config||{}).ownerPeerId||'';
+  var keys=Object.keys(REL);
+  if(!keys.length){rclist.textContent='还没有联系人数据——等她收到消息后这里会有记录。';return}
+  rclist.innerHTML='';
+  keys.forEach(function(k){var R=REL[k]||{};var isOwn=!!(o&&(k===o||k.endsWith(':'+o)));
+   rclist.appendChild(mut((isOwn?'👑 ':'')+k+'　亲密度 '+Math.round(R.affection||0)+'/100　心情 '+Math.round(R.mood||0)+'/100　已聊 '+(R.chats||0)+' 次'))});
+  rc2.body.appendChild(mut('只有主人会计算关系阶段；其他人她按普通朋友对待。'));
+ }).catch(function(){rclist.textContent='（加载失败）'});
+
+ /* ② 称呼与关系 */
+ var r2=itemBlock('称呼','她怎么叫你、你叫她什么');S['rel-call'].appendChild(r2.el);
+ api('GET','panel/persona').then(function(p0){
+  var PER=(p0&&p0.persona)?p0.persona:{};var rc=PER.relationship=PER.relationship||{};
+  r2.body.appendChild(f('专属昵称',inp(rc.callOwner||'',function(v){rc.callOwner=v})));
+  var lk=document.createElement('input');lk.type='checkbox';lk.checked=!!rc.callLock;lk.onchange=function(e){rc.callLock=e.target.checked};
+  r2.body.appendChild(row(lk,document.createTextNode('锁定称呼：不管关系到哪一步，都用上面的昵称')));
+  r2.body.appendChild(f('她希望你叫她',inp(rc.ownerCallsMe||'',function(v){rc.ownerCallsMe=v})));
+  var rlk=document.createElement('input');rlk.type='checkbox';rlk.checked=!rc.renameLock;rlk.onchange=function(e){rc.renameLock=!e.target.checked};
+  r2.body.appendChild(row(rlk,document.createTextNode('允许她自己改这个称呼（关系阶段一变，她会自己决定要不要换个叫法，并写一句理由）')));
+  var rlog=document.createElement('div');rlog.style.gridColumn='1/-1';r2.body.appendChild(rlog);
+  function drawRenameLog(rc2){
+   var L=(rc2.renameLog||[]).slice().reverse();
+   rlog.innerHTML='';
+   if(!L.length){rlog.appendChild(mut('她还没自己改过称呼。'+(rc2.renamePending?('（最近一次阶段变化后，她正在考虑，下次说话时会决定）'):'')));return}
+   var rows=L.map(function(x){return {cells:[new Date(x.at).toLocaleString('zh-CN'),x.from+' → '+x.to,x.stage||'—',x.reason||'—']}});
+   rlog.appendChild(tbl(['时间','从 → 到','关系阶段','她自己写的理由'],rows));
+  }
+  drawRenameLog(rc);
+  r2.body.appendChild(mut('「专属昵称」是她叫你的；「她希望你叫她」是她希望大家叫她的——现在**她自己也会改**：关系阶段一变（熟人→朋友→亲近→暧昧→恋人），她会自己决定要不要换个更贴合的称呼，理由会记在上面。锁死勾掉后她就永远用你填的这个。'));
+  var rsave=btn('保存称呼设置','pri',function(b2){b2.disabled=true;api('POST','panel/persona',{relationship:rc}).then(function(){st.className='ok';st.textContent='称呼设置已保存 ✅ 立即生效'}).catch(function(e){st.className='er';st.textContent='失败：'+e.message}).then(function(){b2.disabled=false})});
+  var rnow=btn('让她现在想一个','',function(b2){b2.disabled=true;st.className='';st.textContent='她正在想…（要调一次模型，约3-8秒）';
+   api('POST','panel/persona',{relationship:rc}).then(function(){return api('POST','panel/rename/now',{})}).then(function(r2b){
+    if(r2b.changed){st.className='ok';st.textContent='她想好了：以后叫她「'+r2b.name+'」——'+(r2b.reason||'')+'（已写入，下次聊天她会自然提一句）'}
+    else{st.className='';st.textContent='她这次不想改'+(r2b.same?'（她想的跟现在一样）':'')+'——大多数时候不变才是正常的'}
+    return api('GET','panel/persona')}).then(function(p1){drawRenameLog((p1.persona||{}).relationship||{});b2.disabled=false}).catch(function(e){st.className='er';st.textContent='失败：'+e.message;b2.disabled=false})});
+  r2.body.appendChild(row(rsave,rnow));
+  }).catch(function(){});
+
+ /* ⑤ 名单与范围 */
+ var r5=itemBlock('回复范围','陌生人要不要理');S['rel-list'].appendChild(r5.el);
+ var r6=itemBlock('谁是主人（👑）','她最在意的那个人');S['rel-list'].appendChild(r6.el);
+ var r7=itemBlock('黑名单','这些人的消息她静默忽略');S['rel-list'].appendChild(r7.el);
+ var r8=itemBlock('安静时段','这个时段里她只理主人');S['rel-list'].appendChild(r8.el);
+ api('GET','panel/config').then(function(c0){
+  var qhI=inp(((c0||{}).config||{}).quietHours||'',function(v){},'01:00-07:30');
+  r8.body.appendChild(f('安静时段',qhI));
+  r8.body.appendChild(saveCfgBtn('保存安静时段',function(){return {quietHours:qhI.value}}));
+  r8.body.appendChild(mut('格式 01:00-07:30；留空=不安静。安静时段里别人发消息她一个字都不回，主人不受限制。'));
+ }).catch(function(){});
+ Promise.all([api('GET','status'),api('GET','panel/config')]).then(function(rs){
+  var s2=rs[0]||{};var cfg=(rs[1]||{}).config||{};
+  var cb=document.createElement('input');cb.type='checkbox';cb.checked=cfg.replyToAll!==false;
+  cb.onchange=function(){api('POST','panel/config',{replyToAll:cb.checked}).then(function(){drawStop()}).catch(function(){})};
+  r5.body.appendChild(row(cb,document.createTextNode('回复所有人（陌生人的消息她也会回）')));
+  r5.body.appendChild(mut('关掉的话，她只回主人和白名单里的人。'));
+  var chips=document.createElement('div');chips.className='chips';chips.style.gridColumn='1/-1';r6.body.appendChild(chips);
+  var known=s2.knownPeers||[];
+  if(!known.length)r6.body.appendChild(mut('还没有人给她发过消息。等她收到第一条消息后，这里会出现 ID，点一下就能指定主人。'));
+  known.forEach(function(p){var b=document.createElement('button');b.className='chip'+(cfg.ownerPeerId===p?' on':'');b.textContent=(cfg.ownerPeerId===p?'👑 ':'')+p;
+   b.onclick=function(){api('POST','panel/config',{ownerPeerId:cfg.ownerPeerId===p?'':p}).then(function(){go('relation')}).catch(function(){})};chips.appendChild(b)});
+  r6.body.appendChild(mut('主人享受：永远特殊对待、关系阶段只对主人计算、安静时段也回他。'));
+  var chips2=document.createElement('div');chips2.className='chips';chips2.style.gridColumn='1/-1';r7.body.appendChild(chips2);
+  (cfg.blocklist||[]).forEach(function(p){var b=document.createElement('button');b.className='chip';b.textContent=p+' ✕';b.onclick=function(){api('POST','panel/config',{blocklist:(cfg.blocklist||[]).filter(function(x){return x!==p})}).then(function(){go('relation')})};chips2.appendChild(b)});
+  var bi=document.createElement('input');bi.placeholder='输入 ID 后回车加入';bi.style.maxWidth='240px';
+  bi.onkeydown=function(e){if(e.key==='Enter'&&bi.value.trim()){api('POST','panel/config',{blocklist:(cfg.blocklist||[]).concat([bi.value.trim()])}).then(function(){go('relation')})}};
+  chips2.appendChild(bi);
+  r7.body.appendChild(mut('黑名单里的人给她发消息，她一个字都不会回（也不会记进记忆）。'));
+ }).catch(function(e){r5.body.appendChild(mut('（加载失败：'+e.message+'）'))});
+}
+/* ── 大脑 = 模型 ── */
+function tBrain(box){tModels(box);}
+
+/* ── 世界引擎（「她」页内的小项化；必须独立配置，不跟对话接口共用） ── */
+/**
+ * 世界引擎相关的小项集合。
+ * host：没有分区时直接挂在它下面；S：给了分区表就按 key 挂到对应分区里（新「世界」页签用这个）。
+ */
+function tWorldItems(host, S){
+ var put=function(key){return (S&&S[key])?S[key]:host};
+ /* ① API */
+ var itA=itemBlock('世界引擎 API','必填：她世界的独立大脑');put('api').appendChild(itA.el);
+ var a=itA.body;
+ a.appendChild(mut('世界引擎是替她"造世界"的另一个大脑：每晚她睡着后写日记、排第二天的作息/心情/痴迷/天气/生活流水、更新"她眼中的你"、每满 7 天做一次性格结算。建议用和对话接口不同家/不同型号的模型——它绝不蹭对话接口、也绝不回落过去。'));
+ var wst=mut('检查中…');a.appendChild(wst);
+ var W0={};
+ var web=inp('',function(v){W0.baseURL=v.trim()},'必填：如 https://api.siliconflow.cn');
+ var wek=inp('',function(v){W0.apiKey=v},'','password');
+ var wem=inp('',function(v){W0.model=v},'必填：给她世界选个模型');
+ api('GET','panel/config').then(function(r2){var W2=(r2.config||{}).world||{};W0=Object.assign({baseURL:'',apiKey:'',model:''},W2);web.value=W0.baseURL;wek.value=W0.apiKey;wem.value=W0.model;
+  if(W0.baseURL&&W0.model){wst.className='ok';wst.textContent='✅ 已配置独立 API · 模型 '+W0.model}else{wst.className='er';wst.textContent='⚠️ 还没配置——不配置她今晚就没有剧本（作息心情走随机兜底）'}}).catch(function(){});
+ a.appendChild(f('BaseURL',web));
+ a.appendChild(f('API Key',wek));
+ a.appendChild(f('模型',wem));
+ var wchips=document.createElement('div');wchips.className='chips';a.appendChild(wchips);
+ a.appendChild(btn('拉取模型列表','',function(b2){b2.disabled=true;api('POST','panel/models',{baseURL:web.value,apiKey:wek.value}).then(function(r2){wchips.innerHTML='';(r2.models||[]).forEach(function(mm){var cc=document.createElement('button');cc.className='chip';cc.textContent=mm.id;cc.onclick=function(){wem.value=mm.id;W0.model=mm.id};wchips.appendChild(cc)});b2.textContent='✓ '+(r2.models||[]).length+'个';setTimeout(function(){b2.textContent='拉取模型列表'},2000)}).catch(function(e){alert(e.message)}).then(function(){b2.disabled=false})}));
+ var saveW=btn('保存世界引擎API','pri',function(){if(!web.value.trim()||!wem.value.trim()){alert('世界引擎必须填自己的 BaseURL 和模型（不跟对话接口共用）');return}api('POST','panel/config',{world:{baseURL:web.value,apiKey:wek.value,model:wem.value}}).then(function(){wst.className='ok';wst.textContent='✅ 已保存 · 模型 '+wem.value;saveW.textContent='已保存 ✅';setTimeout(function(){saveW.textContent='保存世界引擎API'},2000)}).catch(function(e){alert(e.message)})});
+ var genW=btn('立即生成一次世界','',function(){if(!web.value.trim()||!wem.value.trim()){alert('先填好并保存世界引擎的 BaseURL 和模型');return}genW.disabled=true;genW.textContent='生成中…（约10-30秒）';api('POST','panel/world/generate',{}).then(function(){genW.textContent='✅ 已生成';setTimeout(function(){genW.textContent='立即生成一次世界';genW.disabled=false},3000)}).catch(function(e){genW.textContent='失败';genW.disabled=false;alert(e.message)})});
+ a.appendChild(row(saveW,genW));
+
+ /* ② 说明（纯文字，不放任何动态数据） */
+ var itD=itemBlock('世界引擎是干什么的','纯说明：产出 / 联动 / 成本');put('api').appendChild(itD.el);
+ var d=itD.body;
+ d.appendChild(mut('【一句话】世界引擎 = 替她"过日子"的另一个大脑。她睡着后它醒着，把她的世界往前推一格；第二天她几点起、心情如何、聊什么、身边发生什么，都是它昨晚定好的剧本。'));
+ d.appendChild(mut('【为什么要独立一个模型】它干的是"编剧"的活：要记住她的人设、这周的相处、昨天的日记，还要写得像真的生活。这和"即时聊天"是两种任务——所以给它单独一套 API，互不干扰、各花各的钱；坏掉那晚就当她"没做上梦"（作息心情回到随机兜底）。'));
+ d.appendChild(mut('【每晚产出 12 样】① 私人日记 ② 明天起床/睡觉时间（与剧情自洽：熬夜赶稿→次日赖床）③ 心情基线 ④ 痴迷话题 ⑤ 生活流水 2-4 件 ⑥ 心里冒的念头 ⑦ 藏着的小秘密 ⑧ 虚构社交圈 NPC ⑨ 长线小心思 ⑩ 明天天气 ⑪ 重写"她眼中的你" ⑫ 每满 7 天的性格周结算。'));
+ d.appendChild(mut('【性格周结算】满 7 天触发：读这一周"被哄/被怼/聊了多少轮"（账本在「她」页的「她的状态」里），微调六维（合计 ≤±5），并写一句第一人称成长理由进记忆。铁律：只动表达层，绝不违背她的 MBTI 认知类型——她是"被养成"，不是"换个人"。'));
+ d.appendChild(mut('【和别的系统怎么联动】作息/心情/痴迷 → 被「每日随机系统」采用（首页 🌍 = 今天是她写出来的）；流水与成长理由 → 进她的记忆；社交圈/念头/秘密/长线 → 注入聊天提示词；画像 → 注入"她对你的印象"；天气 → 影响心情与穿搭话题。'));
+ d.appendChild(mut('【运转规则与成本】每晚只跑一次（进入她的睡眠窗口后触发）；未配置 = 今晚没剧本；专线失败后 30 分钟内不重试；「立即生成一次世界」可随时强制跑一次。成本：一晚约 1-2 千 token。'));
+
+ /* ③ 运行状态（动态数据集中在这里） */
+ var itS=itemBlock('运行状态 · 上帝视角','上次生成 / 作息 / 心情 / 念头 / 秘密 / 长线 / 流水 / 工作负荷 / 她明天怎么上班');itS.el.open=true;put('run').appendChild(itS.el);
+ var sm=metricsWrap();itS.body.appendChild(sm);
+ var sList=mut('加载中…');itS.body.appendChild(sList);
+ api('GET','panel/today').then(function(r2){
+  var W=(r2||{}).world||{};
+  sm.innerHTML='';
+  sm.appendChild(metric('上次生成',W.generatedAt?new Date(W.generatedAt).toLocaleString('zh-CN'):'<small>还没有生成过</small>'));
+  sm.appendChild(metric('剧本生效日',W.forDate?esc(W.forDate):'<small>—</small>'));
+  sm.appendChild(metric('排的作息',(W.wake||'?')+' <small>起</small> / '+(W.sleep||'?')+' <small>睡</small>'));
+  sm.appendChild(metric('明天心情',typeof W.mood==='number'?(W.mood+' <small>/100</small>'):'<small>—</small>'));
+  sm.appendChild(metric('痴迷话题',W.focus?esc(W.focus):'<small>—</small>'));
+  sm.appendChild(metric('天气',W.weather?(esc(W.weather)+' <small>'+(W.weatherSource==='real'?'真实':'她编的')+'</small>'):'<small>—</small>'));
+  var L=[];
+  if((W.longterm||[]).length)L.push('长线小心思（最新）：'+W.longterm[W.longterm.length-1].text);
+  if((W.thoughts||[]).length)L.push('心里冒的念头：'+W.thoughts.join('；'));
+  if((W.secrets||[]).length)L.push('她藏着的秘密：'+W.secrets.join('；')+'（只会在气氛合适时漏一点）');
+  if((W.flow||[]).length)L.push('明天的生活流水：'+(W.flow||[]).map(function(f){return (f.time||'')+' '+(f.text||'')}).join(' · '));
+  if(W.workload)L.push('她今天的工作负荷：'+W.workload+'/100'+(W.workload>=50?'（≥50 会累积压力）':''));
+  sList.textContent=L.length?L.join(String.fromCharCode(10)):'（跑过一次之后，这里会显示她的念头、秘密、长线和明天的流水）';
+ }).catch(function(){sList.textContent='（加载失败）'});
+
+ /* ③b 她的兴趣与口头禅的变化（她自己换的留历史，你删的不留） */
+ var itH=itemBlock('兴趣与口头禅的变化','一周结算一次，变不变由她的性格决定');put('evolve').appendChild(itH.el);
+ var hBox=document.createElement('div');hBox.style.gridColumn='1/-1';itH.body.appendChild(hBox);
+ api('GET','panel/today').then(function(r2){var W=(r2||{}).world||{};var t=W.tendency||{};var log=(W.interestLog||[]).slice().reverse();
+  hBox.innerHTML='';
+  hBox.appendChild(mut('这一次的判断倾向：'+((t.why)||'（世界引擎还没跑过）')+'　——倾向越低，她就越可能这周什么都不变（她不是每周都变心）。'));
+  if(!log.length){hBox.appendChild(mut('她还没自己改过兴趣/口头禅。满 7 天结算一次，到时这里会记下她是什么时候、为什么换的。'));return}
+  hBox.appendChild(tbl(['时间','类型','动作','内容','她自己写的理由'],log.slice(0,12).map(function(x){return {cells:[new Date(x.at).toLocaleString('zh-CN'),x.kind||'',x.op==='add'?'新增':'淡出',x.text||'',x.reason||'—']}})));
+  hBox.appendChild(mut('注意：这张表只记「她自己换的」。你在「她是谁」里手动改的兴趣/口头禅不留历史（那是你的决定，不是她的）。'));
+ }).catch(function(){hBox.appendChild(mut('（读取失败）'))});
+
+ /* ④ 天气 */
+ var itW=itemBlock('她的天气','真实 API 优先（免费、不用 key），失败她自己编');put('life').appendChild(itW.el);
+ var wet=mut('');wet.style.gridColumn='1/-1';itW.body.appendChild(wet);
+ var wetBtn=btn('试一次实时天气','',function(b2){
+  b2.disabled=true;wet.className='mut';wet.textContent='正在用她人设里的城市查一次…';
+  api('POST','panel/weather/test',{}).then(function(r){
+   if(!r.ok){wet.className='er';wet.textContent='❌ 取不到实时天气：'+(r.error||'未知')+(r.city?('　（她现在的城市：'+r.city+'）'):'');return}
+   wet.className='ok';
+   wet.textContent='✅ 能取到真实天气（城市：'+(r.city||'—')+'）'+(r.today?String.fromCharCode(10)+'今天：'+r.today.text:'')+(r.tomorrow?String.fromCharCode(10)+'明天：'+r.tomorrow.text:'')+String.fromCharCode(10)+r.note;
+  }).catch(function(e){wet.className='er';wet.textContent='调用失败：'+e.message}).then(function(){b2.disabled=false});
+ });
+ itW.body.appendChild(row(wetBtn,mut('不用配 key：数据来自 Open-Meteo，只要「她是谁 → 城市」填对了就能用')));
+ api('GET','panel/today').then(function(r0){
+  var W=(r0||{}).world||{};
+  if(W.weatherError){wet.className='er';wet.textContent='⚠️ 上次取真实天气失败，用了她自己编的：'+W.weatherError;}
+  else if(W.weatherSource==='real'){wet.className='ok';wet.textContent='上次用的是真实天气 ✅（'+W.date+'：'+(W.weather||'')+'）';}
+  else if(W.weather){wet.className='mut';wet.textContent='上次的天气是她自己编的（要么还没跑过、要么取实时失败了——点上面的按钮可以现场验一次）。';}
+ }).catch(function(){});put('life').appendChild(itW.el);
+ var winfo=mut('加载中…');itW.body.appendChild(winfo);
+ var wr=document.createElement('input');wr.type='checkbox';wr.checked=true;
+ wr.onchange=function(){api('POST','panel/config',{world:{weatherReal:wr.checked}}).then(function(){winfo.className='ok';winfo.textContent=wr.checked?'已开启真实天气（API失败时她自己编）':'已关闭真实天气（全部由她自己编）'}).catch(function(e){alert(e.message);wr.checked=!wr.checked})};
+ itW.body.appendChild(row(wr,document.createTextNode('接入真实天气 API（城市=她的身份卡里填的城市）')));
+ itW.body.appendChild(mut('天气会影响她的心情、穿搭话题，以及"提醒你添衣"这类关心。'));
+
+ /* ⑤ 社交圈 */
+ var itC=itemBlock('她的社交圈','世界引擎维护的稳定编制，聊天里会自然提到');put('life').appendChild(itC.el);
+ var clist=mut('加载中…');itC.body.appendChild(clist);
+ api('GET','panel/today').then(function(r2){var W3=(r2||{}).world||{};
+  if(W3.weather){winfo.textContent='今天：'+W3.weather+'（'+(W3.weatherSource==='real'?'真实天气API':'她自己编的')+'）'}else{winfo.textContent='还没有天气记录——世界引擎跑过一次就会有。'}
+  wr.checked=W3.weatherReal!==false;
+  var npcs=W3.npcs||[];
+  if(npcs.length){clist.innerHTML='';npcs.forEach(function(n){var nm=(n&&typeof n==='object')?n:null;var line=nm?(nm.name+(nm.rel?'（'+nm.rel+'）':'')+(nm.note?'：'+nm.note:'')):String(n);clist.appendChild(mut('· '+line))});
+   clist.appendChild(mut('编制上限 6 人：世界引擎每晚维护，新朋友会进圈、老人不会凭空消失。'));}
+  else{clist.textContent='还没有社交圈——世界引擎跑几晚后，会自然为她聚起一圈朋友/同事。'}
+ }).catch(function(){winfo.textContent='（加载失败）';clist.textContent='（加载失败）'});
+}
+/* ── 机务 = 设置+朋友圈+功能状态 ── */
+/* ── 机务 = 载体与通道 + 系统与备份 + 媒体（占位）+ 朋友圈工坊 ── */
+function tOps(box){
+ box.innerHTML='';
+ var SECS=[
+  {id:'ops-chan',icon:'📡',title:'载体与通道',desc:'她从这个微信说话 · 防封'},
+  {id:'ops-sys',icon:'🛠️',title:'系统与备份',desc:'Python · 自启 · 保留天数 · 导出导入'},
+  {id:'ops-media',icon:'🖼️',title:'媒体（占位）',desc:'生图/过目开关，等形象工坊落地'},
+  {id:'ops-moments',icon:'📷',title:'朋友圈工坊',desc:'草稿 · 复制 · 标记已发'}
+ ];
+ var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+ wrap.appendChild(tocFor(SECS));
+ var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+ body.appendChild(mut('这一页是"她的机务舱"：她从哪个微信说话、防封参数、系统怎么跑、以及配图相关的开关位。她的言行与人设在她页，你们之间的关系在你们页，模型接口在大脑页。'));
+ var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+ tChanItem(S['ops-chan']);
+ tSysItems(S['ops-sys']);
+ tMediaItem(S['ops-media']);
+ tMoments(S['ops-moments']);
+}
+
+/** 配置保存按钮（统一：即时写盘，每组各自保存） */
+function saveCfgBtn(label,getPatch){return btn(label,'pri',function(b2){b2.disabled=true;api('POST','panel/config',getPatch()).then(function(){b2.textContent='已保存 ✅';setTimeout(function(){b2.textContent=label;b2.disabled=false},1500)}).catch(function(e){b2.textContent='失败:'+e.message;alert(e.message);b2.disabled=false})})}
+
+/* ── 载体与通道 ── */
+function tChanItem(box){
+ loadCfg().then(function(cfg){
+  var C=cfg.channel||{};
+  var it=itemBlock('发送通道','她从哪个微信跟你说话');it.el.open=true;box.appendChild(it.el);
+  var mode=document.createElement('select');[['clawbot','ClawBot（官方机器人通道，当前载体）'],['wxauto','wxauto（PC微信接管）']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];if((C.mode||'clawbot')===o[0])op.selected=true;mode.appendChild(op)});
+  it.body.appendChild(f('发送通道',mode));
+  var wxE=document.createElement('input');wxE.type='checkbox';wxE.checked=!!C.wxautoEnabled;
+  it.body.appendChild(row(wxE,document.createTextNode('wxauto 启用（默认关！解封后再开，先小流量）')));
+  var wu=inp(C.wxautoUrl||'http://127.0.0.1:43123',function(v){});
+  it.body.appendChild(f('wxauto 桥地址',wu));
+  var cap=inp(C.wxautoDailyCap||120,function(v){},'120','number');
+  it.body.appendChild(f('每日发送上限（防封）',cap));
+  var wp=inp((C.wxautoPeers||[]).join('，'),function(v){},'逗号分隔');
+  it.body.appendChild(f('监听谁的备注名',wp));
+  var wxst=mut('');
+  api('GET','panel/wxauto/status').then(function(r){wxst.textContent='桥状态: '+(r.bridge&&r.bridge.ready?'✅ 已连接微信':'未连接（运行「启动wxauto通道.bat」）')+' · 监听中: '+(((r.bridge&&r.bridge.listening)||[]).join('、')||'无')}).catch(function(){});
+  it.body.appendChild(wxst);
+  it.body.appendChild(saveCfgBtn('保存通道设置',function(){return {channel:{mode:mode.value,wxautoEnabled:wxE.checked,wxautoUrl:wu.value,wxautoDailyCap:Number(cap.value)||120,wxautoPeers:wp.value.split(/[,，]/).map(function(x){return x.trim()}).filter(Boolean)}}}));
+  it.body.appendChild(mut('⚠️ wxauto 用 UIA 操作微信窗口（不注入、不碰内存，比 wcferry 安全得多），但不是零风险：账号被限制过，要等解封并挂机观察几天，再小流量试跑。现在 ClawBot 是主力通道。'));
+ }).catch(function(e){box.appendChild(mut('（加载失败：'+e.message+'）'))});
+}
+
+/* ── 系统与备份 ── */
+function tSysItems(box){
+ loadCfg().then(function(cfg){
+  var S=cfg.system||{};
+  var i1=itemBlock('系统','Python · 自启 · 备份保留');box.appendChild(i1.el);
+  var py=inp(S.pythonPath||'',function(v){},'留空=用 PATH 里的 python');
+  i1.body.appendChild(f('Python 路径',py));
+  var asE=document.createElement('input');asE.type='checkbox';asE.checked=S.autoStartEngine!==false;
+  i1.body.appendChild(row(asE,document.createTextNode('DSH 启动时自动拉起记忆引擎')));
+  var bkI=inp(S.backupKeepDays||7,function(v){},'7','number');
+  i1.body.appendChild(f('备份保留天数',bkI));
+  i1.body.appendChild(saveCfgBtn('保存系统设置',function(){return {system:{pythonPath:py.value,autoStartEngine:asE.checked,backupKeepDays:Number(bkI.value)||7}}}));
+  i1.body.appendChild(mut('数据目录：'+((cfg.dataDir&&cfg.dataDir!=='')?cfg.dataDir:'~/.dsh/wechat-companion')+'（整个目录=她的全部记忆，每日自动备份，含向量库）'));
+  var i2=itemBlock('配置导出 / 导入','换电脑或改乱了就用它');box.appendChild(i2.el);
+  i2.body.appendChild(btn('导出全部配置（下载 JSON）','',function(){var blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='her-config-'+new Date().toISOString().slice(0,10)+'.json';a.click()}));
+  var imp=document.createElement('textarea');imp.rows=3;imp.placeholder='把导出的 JSON 粘进来，点导入即可整体恢复';
+  i2.body.appendChild(imp);
+  i2.body.appendChild(btn('导入以上 JSON','',function(){try{var o=JSON.parse(imp.value);api('POST','panel/config',o).then(function(){alert('导入成功 ✅');go('ops')}).catch(function(e){alert('导入失败: '+e.message)})}catch(e){alert('JSON格式不对')}}));
+  i2.body.appendChild(mut('导出的是"设置"（模型/通道/开关这些）；她的记忆与人设在数据目录里，靠每日备份保。'));
+ }).catch(function(e){box.appendChild(mut('（加载失败：'+e.message+'）'))});
+}
+
+/* ── 媒体（占位开关，等形象工坊落地后随它搬走） ── */
+function tMediaItem(box){
+ loadCfg().then(function(cfg){
+  var MD=cfg.media||{};
+  var it=itemBlock('图片开关（占位）','形象工坊 + AI 生图还没做，先放位子');box.appendChild(it.el);
+  var img=document.createElement('input');img.type='checkbox';img.checked=MD.imageEnabled!==false;
+  it.body.appendChild(row(img,document.createTextNode('允许她生成/发送图片')));
+  var rv=document.createElement('input');rv.type='checkbox';rv.checked=!!MD.reviewBeforeSend;
+  it.body.appendChild(row(rv,document.createTextNode('生图后先给你过目再发（推荐先开）')));
+  it.body.appendChild(saveCfgBtn('保存媒体设置',function(){return {media:{imageEnabled:img.checked,reviewBeforeSend:rv.checked}}}));
+  it.body.appendChild(mut('这两个开关是给「形象工坊 + AI 生图 + 主动分享照片」准备的——那套还没做（要等你定好她的形象风格，且通道要能发图）。现在开不开都不影响其它功能。'));
+ }).catch(function(e){box.appendChild(mut('（加载失败：'+e.message+'）'))});
+}
+
+/* ── 连接（写进给定容器） ── */
+function tStatus(box){
+ var c=card('微信连接与运行');box.appendChild(c);
+ c.style.gridTemplateColumns='1fr';
+ var body=document.createElement('div');body.style.gridColumn='1/-1';c.appendChild(body);
+ var qrBox=document.createElement('div');var conn=document.createElement('span');conn.className='mut';
+ function draw(st,err){body.innerHTML='';if(err){body.appendChild(mut('加载失败: '+err));return}
+  var r1=row();var dot=document.createElement('span');dot.className='dot'+(st.running?' on':'');r1.appendChild(dot);r1.appendChild(document.createTextNode(st.running?'运行中':'已停止'));body.appendChild(r1);
+  body.appendChild(row(btn(st.running?'停止':'启动','pri',function(){api('POST',st.running?'disable':'enable').then(load).catch(function(e){alert(e.message)})})));
+  var accs=st.accounts||[];
+  if(!accs.length){body.appendChild(mut('还没有绑定她的微信号。点下方按钮扫码绑定。'))}
+  accs.forEach(function(a){var b=bx();b.appendChild(row((function(){var s=document.createElement('span');s.className='mut';s.textContent=(a.name||a.accountId)+(a.enabled?'':'（已停用）');return s})(),btn('移除','dg',function(){api('POST','remove',{accountId:a.accountId}).then(load).catch(function(){})})));
+   b.appendChild(mut(a.accountId+' · token='+(a.hasToken?'已存':'缺失')+' · '+(a.lastLoginAt||'从未登录')+(a.health?(' · '+a.health):'')));body.appendChild(b)});
+  body.appendChild(row(btn('连接自检','',function(b2){b2.disabled=true;api('POST','panel/conn-test',{}).then(function(r){conn.className=r.ok?'ok':'er';conn.textContent=(r.ok?'✅ ':'⚠️ ')+(r.note||r.error||'')}).catch(function(e){conn.className='er';conn.textContent=e.message});setTimeout(function(){b2.disabled=false},100)}),conn));
+  body.appendChild(row(btn('扫码绑定她的微信号','pri',function(){api('POST','qrlogin',{}).then(function(r){drawQr(r.sessionId,r.qrImage)}).catch(function(e){alert(e.message)})})));
+  body.appendChild(qrBox);
+  body.appendChild(mut('绑定需要 bot_type=3 资格的微信账号（微信官方机器人通道）。'));
+ }
+ function drawQr(sid,img){qrBox.innerHTML='';var im=document.createElement('img');im.className='qr';im.src=img;qrBox.appendChild(im);qrBox.appendChild(mut('用她的微信扫码并确认…'));var t=setInterval(function(){api('POST','qrstatus',{sessionId:sid}).then(function(r){if(r.status==='confirmed'){clearInterval(t);qrBox.innerHTML='';load();}}).catch(function(){})},2000)}
+ function load(){api('GET','status').then(function(st){draw(st)}).catch(function(e){draw(null,e.message)})}
+ load();
+}
+
+/* ── 今天的她（写进给定容器） ── */
+function tToday(box){
+ var cT=card('今天的她');box.appendChild(cT);
+ var td=document.createElement('div');td.style.gridColumn='1/-1';cT.appendChild(td);td.appendChild(mut('加载中…'));
+ api('GET','panel/today').then(function(r){var t=r.today||{};var df=r.deform||{};var W2=r.world||{};td.innerHTML='';
+  var chips=document.createElement('div');chips.className='chips';
+  [['☀ 起床 '+(t.wake||'—')],['🌙 睡觉 '+(t.sleep||'—')],['💭 心情 '+Math.round(t.mood||0)],['🔋 电量 '+Math.round(t.battery||0)],['💬 话痨度 '+Math.round((t.chatter||1)*100)+'%'],['⚡ 今日痴迷 '+(t.focus||'—')],['🎭 压力 '+Math.round(df.stress||0)+(df.state&&df.state!=='normal'?('·变形:'+df.state):'')]].forEach(function(x){var c=document.createElement('button');c.className='chip';c.textContent=x[0];chips.appendChild(c)});
+  td.appendChild(chips);
+  if(W2.weather){var wch=document.createElement('button');wch.className='chip';wch.textContent='🌤 '+W2.weather+(W2.weatherSource==='story'?'（她编的）':'');chips.appendChild(wch);}
+  if(t.traitDrift){var dk=Object.keys(t.traitDrift).filter(function(k){return t.traitDrift[k]});if(dk.length){var LB={socialBattery:'社交电量',warmth:'情感温度',attachment:'依恋强度',sharpness:'批判锐度',initiative:'发起力',orderliness:'秩序感'};var dtx=dk.map(function(k){return LB[k]+(t.traitDrift[k]>0?'+':'')+t.traitDrift[k]}).join(' ');var tc2=document.createElement('button');tc2.className='chip';tc2.textContent='📊 今日六维弹性 '+dtx;tc2.title='性格底色不变，只是今天的状态在基准上摆一摆（明天弹回）';chips.appendChild(tc2)}}
+  if(t.worldAuthored){var wc=document.createElement('button');wc.className='chip';wc.textContent='🌍 今天由世界引擎书写';chips.appendChild(wc);}
+  if((t.events||[]).length)td.appendChild(mut('今天：'+(t.events||[]).join(' · ')));
+  td.appendChild(mut('同一天结果固定（重开页面也一样）；每天都会有点不一样——这就是生活。'));
+ }).catch(function(){});
+}
+
+/* ── 实况直播（写进给定容器） ── */
+function tLiveFeed(box){
+ var c=card('她的实况');box.appendChild(c);
+ var lv=document.createElement('div');lv.style.gridColumn='1/-1';c.appendChild(lv);
+ function load(){api('GET','panel/activity').then(function(r){lv.innerHTML='';lv.appendChild(mut('已收消息 '+(r.inboundCount||0)+' 条 · 最近收信 '+(r.lastInboundAt?new Date(r.lastInboundAt).toLocaleString('zh-CN'):'还没有')));(r.activity||[]).slice(0,50).forEach(function(a){var b=bx();b.innerHTML='<b>'+new Date(a.at).toLocaleTimeString('zh-CN')+'</b> '+esc(a.text);lv.appendChild(b)})}).catch(function(){})}
+ load();
+ if(TIMER)clearInterval(TIMER);TIMER=setInterval(load,4000);
+}
+
+/* ── 世界 = 世界引擎控制的全部栏目（集中一页，别散在各处让人搞混） ── */
+function tWorld(box){
+ box.innerHTML='';
+ var SECS=[
+  {id:'wd-api',icon:'🧠',title:'世界引擎',desc:'独立大脑 · API · 它是干什么的'},
+  {id:'wd-run',icon:'🔭',title:'今天的分寸与运行状态',desc:'熟度/称呼/语气 · 上帝视角'},
+  {id:'wd-past',icon:'📜',title:'她的过去（分层）',desc:'她不会一次说完 · 已告诉过你哪些'},
+  {id:'wd-evolve',icon:'🌱',title:'她的成长',desc:'兴趣口头禅变化 · 六维周结算账本'},
+  {id:'wd-life',icon:'🌤️',title:'天气与社交圈',desc:'真实天气优先 · 她生活里的人'},
+  {id:'wd-diary',icon:'📔',title:'她的日记',desc:'每晚替她写的第一人称真心话'},
+  {id:'wd-portrait',icon:'🪞',title:'她眼中的你',desc:'每晚被重写，注入她的对话'}
+ ];
+ var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+ wrap.appendChild(tocFor(SECS));
+ var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+ var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+
+ /* ① 世界引擎本体（API + 说明 + 运行状态 + 兴趣变化 + 天气 + 社交圈） */
+ tWorldItems(body, { api: S['wd-api'], run: S['wd-run'], evolve: S['wd-evolve'], life: S['wd-life'] });
+
+ /* ② 今天的分寸（世界引擎综合判断；没跑就用兜底表） */
+ var tp=itemBlock('今天的相处分寸','由世界引擎结合性格/职业/心情/亲密度综合判断');tp.el.open=true;S['wd-run'].appendChild(tp.el);
+ var toneBox=mut('读取中…');toneBox.style.gridColumn='1/-1';tp.body.appendChild(toneBox);
+ var limBox=mut('');limBox.style.gridColumn='1/-1';tp.body.appendChild(limBox);
+ api('GET','panel/today').then(function(rt){
+  var Wt=(rt||{}).world||{};var tt=Wt.tone;var T2=(rt||{}).today||{};var R2=(rt||{}).relation||{};var aff2=R2.affection||0;
+  if(tt&&Wt.forDate&&T2.date&&Wt.forDate===T2.date){
+   toneBox.className='mut';
+   toneBox.textContent='世界引擎昨晚判断：该表现的熟度 '+tt.intimacy+'/100 · 称呼「'+(tt.address||'—')+'」'+(tt.style?String.fromCharCode(10)+'语气：'+tt.style:'')
+    +((tt.forbid&&tt.forbid.length)?String.fromCharCode(10)+'今天不要：'+tt.forbid.join('、'):'')
+    +(tt.reason?String.fromCharCode(10)+'她那边的理由：'+tt.reason:'');
+  } else {
+   toneBox.className='mut';
+   toneBox.textContent='今天还没跑过世界引擎 → 用内置的阶段兜底表（亲密度 <20=刚认识：客气、有边界感、不撒娇、不叫昵称）。配好上面的 API 并成功跑一晚后，分寸由它综合判断。';
+  }
+  var lim;
+  if(aff2<20) lim='亲密度 '+Math.round(aff2)+'（刚认识）→ 她**不会主动发消息**，你找她才回';
+  else if(aff2<40) lim='亲密度 '+Math.round(aff2)+'（熟人）→ 每天最多 1 条主动分享';
+  else if(aff2<55) lim='亲密度 '+Math.round(aff2)+'（朋友）→ 每天最多 2 条';
+  else if(aff2<70) lim='亲密度 '+Math.round(aff2)+'（亲近）→ 每天最多 3 条';
+  else lim='亲密度 '+Math.round(aff2)+'（已经很熟）→ 按「她→生活节奏」里你设的上限走';
+  limBox.className='mut';limBox.textContent='主动消息上限：'+lim+'。';
+ }).catch(function(){toneBox.textContent='（读取失败）'});
+
+ /* ③ 她的过去（分层 + 已告诉过你哪些） */
+ var past=itemBlock('她的过去 · 分层','你自己知道全部，但对外一层层说');past.el.open=true;S['wd-past'].appendChild(past.el);
+ var pa=mut('读取中…');pa.style.gridColumn='1/-1';past.body.appendChild(pa);
+ api('GET','panel/persona').then(function(r0){
+  var P=(r0||{}).persona||{};var prof=P.profile||{};var ps=prof.past||{};
+  var cur={surface:ps.surface||'',middle:ps.middle||'',deep:ps.deep||''};
+  pa.className='mut';
+  pa.textContent='这三段是她的底细（你自己看）。她**不会主动倒出来**：表层随时可聊；中层要"熟人~朋友且你问到"才零星说；深层要"亲近以上 + 你问到 + 气氛对了"才说。她在聊天里说过的会被世界引擎记进下面的清单，避免重复讲。'
+   +String.fromCharCode(10)+'（她的对外背景总述在「她→她是谁→背景故事」，这里的三段是分层细节。）';
+  var mk=function(key,label,ph){
+   var t=document.createElement('textarea');t.rows=3;t.value=cur[key]||'';t.placeholder=ph;t.onchange=function(e){cur[key]=e.target.value};
+   past.body.appendChild(f(label,t,'lg'));
+  };
+  mk('surface','表层（随时能聊）','例：上海做律师，喜欢旅行，偶尔加班到很晚');
+  mk('middle','中层（熟人~朋友+被问到）','例：老家在苏州，父母做小生意，大学学的是法律，毕业那年换过两次工作');
+  mk('deep','深层（亲近以上+气氛对了）','例：大三那年父亲生病家里紧张，她那段时间差点退学；她一直想开一家小书店');
+  var st2=mut('');
+  past.body.appendChild(row(btn('保存她的过去','pri',function(b2){b2.disabled=true;
+   api('POST','panel/persona',{profile:{past:cur}}).then(function(){st2.className='ok';st2.textContent='已保存 ✅ 她会按分层慢慢说'}).catch(function(e){st2.className='er';st2.textContent='失败：'+e.message}).then(function(){b2.disabled=false})}),st2));
+  past.body.appendChild(mut('想让她把过去说清楚？去「女娲」跟她聊——女娲现在专门负责"过去访谈"（会替你把这些问出来并分好层）。'));
+ }).catch(function(){pa.textContent='（读取失败）'});
+ var disBox=document.createElement('div');disBox.style.gridColumn='1/-1';past.body.appendChild(disBox);
+ api('GET','panel/today').then(function(r0){
+  var W=(r0||{}).world||{};var dis=(W.disclosed||[]).slice().reverse();
+  disBox.innerHTML='';
+  disBox.appendChild(mut('她的"公开度"：已经告诉过你 '+dis.length+' 件事'+(dis.length?'':'（你们还很不熟，正常）')));
+  if(dis.length){
+   disBox.appendChild(tbl(['时间','层','她告诉你的'],dis.slice(0,15).map(function(x){return {cells:[new Date(x.at).toLocaleString('zh-CN'),x.layer||'',x.topic||'']}})));
+  } else {
+   disBox.appendChild(mut('（还没有记录。世界引擎跑起来后，会从你们的聊天里自动登记"她今天透露了哪一点过去"。）'));
+  }
+ }).catch(function(){});
+
+ /* ④ 六维周结算账本（世界引擎每周算一次） */
+ var ev=itemBlock('性格周结算账本','满 7 天，世界引擎按这一周的相处微调六维');S['wd-evolve'].appendChild(ev.el);
+ var evBox=mut('读取中…');evBox.style.gridColumn='1/-1';ev.body.appendChild(evBox);
+ api('GET','panel/today').then(function(r0){
+  var e=(r0||{}).evolution||{};
+  evBox.className='mut';
+  evBox.textContent='本周账本：被哄 '+(e.warm||0)+' 次 · 被怼 '+(e.rude||0)+' 次 · 聊了 '+(e.chats||0)+' 轮'
+   +String.fromCharCode(10)+'满 7 天时，世界引擎会据此给六维各 -2~+2 的微调（合计绝对值≤5），并写一句第一人称的成长理由进她的记忆；每维还被钳制在"MBTI 基准 ±25"内——她是"被养成"，不是"换个人"。'
+   +(e.lastEvolvedAt?(String.fromCharCode(10)+'上次结算：'+new Date(e.lastEvolvedAt).toLocaleString('zh-CN')):String.fromCharCode(10)+'还没结算过（需要满 7 天且世界引擎跑成功）。');
+ }).catch(function(){evBox.textContent='（读取失败）'});
+
+ /* ⑤ 她的日记 */
+ var r3=itemBlock('她的日记','世界引擎每晚替她写（第一人称真心话）');r3.el.open=true;S['wd-diary'].appendChild(r3.el);
+ var diaryBox=document.createElement('div');diaryBox.style.gridColumn='1/-1';r3.body.appendChild(diaryBox);
+ api('GET','panel/today').then(function(r0){
+  var W=(r0||{}).world||{};diaryBox.innerHTML='';
+  if(W.diary){
+   var d=bx();d.innerHTML='<b>📅 '+esc(W.date||'')+'</b>';diaryBox.appendChild(d);
+   var t=document.createElement('div');t.textContent=W.diary;t.style.lineHeight='1.8';diaryBox.appendChild(t);
+   diaryBox.appendChild(mut('这是她写给自己看的，不是给你看的——你可以偷看，但别在聊天里直接背出来。'));
+  } else {
+   diaryBox.appendChild(mut('还没有日记。'));
+   diaryBox.appendChild(mut('原因通常是：①世界引擎还没配置自己的 API（本页第一个分区）；②她还没进过睡眠窗口（睡后才会写）。'));
+   diaryBox.appendChild(mut('配好 API 后，点世界引擎分区里的「立即生成一次世界」可以马上试跑一篇。'));
+  }
+ }).catch(function(){diaryBox.appendChild(mut('（加载失败）'))});
+
+ /* ⑥ 她眼中的你 */
+ var r4=itemBlock('她眼中的你（画像）','世界引擎每晚结合聊天重写');S['wd-portrait'].appendChild(r4.el);
+ var pi=document.createElement('textarea');pi.rows=3;pi.placeholder='她眼里的你是什么样的人（世界引擎每晚重写；你也可以手动改）';
+ api('GET','panel/portrait').then(function(r0){pi.value=(r0||{}).portrait||''}).catch(function(){});
+ r4.body.appendChild(pi);
+ var pst=mut('');
+ r4.body.appendChild(row(btn('保存画像','pri',function(b2){b2.disabled=true;api('POST','panel/portrait',{portrait:pi.value}).then(function(){pst.className='ok';pst.textContent='已保存 ✅ 下一轮聊天就会带上'}).catch(function(e){pst.className='er';pst.textContent='失败：'+e.message}).then(function(){b2.disabled=false})}),pst));
+ r4.body.appendChild(mut('这段文字会直接注入她的对话提示——她怎么待你，很大一部分取决于它。'));
+}
+
+/* ── 大脑 = 模型（分区折叠） ── */
+function tModels(box){
+ box.innerHTML='';box.appendChild(mut('加载中…'));
+ loadCfg().then(function(c){
+  var SECS=[
+   {id:'ai-chat',icon:'🧠',title:'对话接口',desc:'她的大脑（必填）'},
+   {id:'ai-other',icon:'🧩',title:'其他接口',desc:'生图 · 语音 · 识图 · 向量（可选，每个都能单独体检）'},
+   {id:'ai-params',icon:'🎛️',title:'通用参数',desc:'温度 · 语音条比例'}
+  ];
+  var ROLES=[['image','② 生图接口','朋友圈配图、她拍生活照用；暂未上线，可先留空',[]],['tts','③ 语音合成 TTS','暂不使用：当前通道发不了语音（代码已就绪）',[['voice','音色（可选）']]],['asr','④ 语音识别 ASR','暂不使用：通道收语音待验证',[]],['vision','⑤ 识图 VLM','她看得见你发的图片',[]],['embed','⑥ 记忆向量','整理她的记忆用；本地 Ollama 或云端接口',[['source','向量来源：local=本地Ollama / api=云端','sourceSelect']]]];
+  var cur0=(CFG.chat)||{};
+  box.innerHTML='';
+  var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+  wrap.appendChild(tocFor(SECS));
+  var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+  var st=mut('六个接口互相独立；留空 BaseURL/Key 的接口自动沿用①对话接口（同一家只填一次）。可混搭多家。');body.appendChild(st);
+  var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+
+  function pullBtn(getBase,getKey,onIds){return btn('拉取列表','',function(b2){b2.disabled=true;api('POST','panel/models',{baseURL:getBase(),apiKey:getKey()}).then(function(r){var ids=(r.models||[]).map(function(m){return m.id});onIds(ids);b2.textContent='✓ '+ids.length+'个';setTimeout(function(){b2.textContent='拉取列表'},2000)}).catch(function(e){alert(e.message)}).then(function(){b2.disabled=false})})}
+  /* 两级体检按钮：测连通（零成本）/ 真跑一次（最小真实请求）。
+     用表单里当前填的值去测（可以先测再存），结果就地显示，不弹窗。 */
+  function testBtns(role,getForm,box){
+   var out=document.createElement('div');out.style.gridColumn='1/-1';out.className='mut';
+   function run(b2,deep){
+    b2.disabled=true;out.className='mut';out.textContent='测试中…'+(deep?'（真跑一次，可能要几秒到几十秒）':'');
+    api('POST','panel/model-test',{role:role,deep:deep,form:getForm()}).then(function(r){
+     out.className=r.ok?'ok':'er';
+     out.textContent=(r.ok?'✅ ':'⚠️ ')+(r.detail||'')+'　·　耗时 '+r.ms+'ms'+(r.sample?String.fromCharCode(10)+'样例：'+r.sample:'')+(r.hint?String.fromCharCode(10)+'建议：'+r.hint:'');
+    }).catch(function(e){out.className='er';out.textContent='测试调用失败：'+e.message}).then(function(){b2.disabled=false});
+   }
+   box.appendChild(row(btn('测连通','',function(b2){run(b2,false)}),btn('真跑一次','pri',function(b2){run(b2,true)})));
+   box.appendChild(out);
+   return out;
+  }
+  function chipsBox(){var d=document.createElement('div');d.className='chips';d.style.gridColumn='1/-1';return d}
+
+  /* ① 对话接口 */
+  var i1=itemBlock('对话接口 · 她的大脑','必填：填一次就能用');i1.el.open=true;S['ai-chat'].appendChild(i1.el);
+  var chat=CFG.chat=Object.assign({},cur0);
+  i1.body.appendChild(f('BaseURL',inp(chat.baseURL,function(v){chat.baseURL=v},'https://api.siliconflow.cn')));
+  i1.body.appendChild(f('API Key',inp(chat.apiKey,function(v){chat.apiKey=v},'','password')));
+  var cInp=inp(chat.model,function(v){chat.model=v});
+  i1.body.appendChild(f('模型名',cInp));
+  i1.body.appendChild(pullBtn(function(){return chat.baseURL},function(){return chat.apiKey},function(ids){cChips.innerHTML='';ids.forEach(function(m){var c2=document.createElement('button');c2.className='chip';c2.textContent=m;c2.onclick=function(){cInp.value=m;chat.model=m};cChips.appendChild(c2)})}));
+  var cChips=chipsBox();i1.body.appendChild(cChips);
+  testBtns('chat',function(){return {baseURL:chat.baseURL,apiKey:chat.apiKey,model:chat.model}},i1.body);
+   i1.body.appendChild(mut('这是她聊天用的大脑。填好 BaseURL+Key → 点「拉取列表」→ 点模型芯片填入 → 拉到最下面保存。填完先点「测连通」确认三样都对，再点「真跑一次」看她真的会不会说话。'));
+
+  /* ② 其他接口 */
+  ROLES.forEach(function(rd){
+   var role=rd[0],title=rd[1],note=rd[2],extra=rd[3];
+   var ii=itemBlock(title,note);S['ai-other'].appendChild(ii.el);
+   var cur=CFG[role]||{};
+   if(role==='embed'){cur=Object.assign({source:'local',url:'http://127.0.0.1:11434',model:'bge-m3'},cur)}
+   ii.body.appendChild(f('BaseURL',inp(cur.baseURL,function(v){cur.baseURL=v},'留空=沿用对话接口')));
+   ii.body.appendChild(f('API Key',inp(cur.apiKey,function(v){cur.apiKey=v},'留空=沿用对话接口','password')));
+   var mInp=inp(cur.model,function(v){cur.model=v});
+   ii.body.appendChild(f('模型名',mInp));
+   ii.body.appendChild(pullBtn(function(){return cur.baseURL||((CFG.chat||{}).baseURL)},function(){return cur.apiKey||((CFG.chat||{}).apiKey)},function(ids){chips.innerHTML='';ids.forEach(function(m){var c2=document.createElement('button');c2.className='chip';c2.textContent=m;c2.onclick=function(){mInp.value=m;cur.model=m};chips.appendChild(c2)})}));
+   var chips=chipsBox();ii.body.appendChild(chips);
+   extra.forEach(function(ex){
+    if(ex[2]==='sourceSelect'){
+     var s2=document.createElement('select');[['local','本地 Ollama（隐私最优）'],['api','云端接口（OpenAI兼容）']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];if(cur.source===o[0])op.selected=true;s2.appendChild(op)});
+     s2.onchange=function(e){cur.source=e.target.value};
+     ii.body.appendChild(f('向量来源',s2));
+     ii.body.appendChild(f('Ollama 地址',inp(cur.url,function(v){cur.url=v},'http://127.0.0.1:11434')));
+     ii.body.appendChild(f('嵌入模型',inp(cur.model,function(v){cur.model=v},'bge-m3')));
+    } else { ii.body.appendChild(f(ex[1],inp(cur[ex[0]],function(v){cur[ex[0]]=v}))) }
+   });
+   testBtns(role,function(){return {baseURL:cur.baseURL,apiKey:cur.apiKey,model:cur.model,voice:cur.voice,source:cur.source,url:cur.url}},ii.body);
+   CFG[role]=cur;
+  });
+
+  /* ③ 通用参数 */
+  var i3=itemBlock('通用参数','影响她说话的发挥与语音条');S['ai-params'].appendChild(i3.el);
+  var t1=document.createElement('input');t1.type='range';t1.min=0;t1.max=2;t1.step=0.05;t1.value=(CFG.params&&CFG.params.temperature)||0.8;var t1v=Number(t1.value);
+  var l1=mut('temperature '+t1v);
+  t1.oninput=function(){t1v=Number(t1.value);l1.textContent='temperature '+t1v};
+  i3.body.appendChild(l1);i3.body.appendChild(t1);
+  i3.body.appendChild(mut('温度越高她越天马行空、越低越稳；0.8 左右最像人。'));
+  var t2=document.createElement('input');t2.type='range';t2.min=0;t2.max=100;t2.step=5;t2.value=Math.round(((CFG.behavior||{}).voiceRate||0)*100);var t2v=Number(t2.value);
+  var l2=mut('语音条比例 '+t2v+'%');
+  t2.oninput=function(){t2v=Number(t2.value);l2.textContent='语音条比例 '+t2v+'%'};
+  i3.body.appendChild(l2);i3.body.appendChild(t2);
+  i3.body.appendChild(mut('暂不使用：当前通道发不出语音，代码已就绪，通道支持后打开即可。'));
+  var im=itemBlock('聊天机制','一条最多拆几条 / 记得最近几轮');S['ai-params'].appendChild(im.el);
+  api('GET','panel/config').then(function(r2){var b1=(r2.config||{}).behavior||{};
+   var cmI=inp(b1.chunkMax||3,function(v){},'3','number');
+   im.body.appendChild(f('最多拆几条',cmI));
+   var crI=inp(b1.contextRounds||16,function(v){},'16','number');
+   im.body.appendChild(f('记得最近几轮',crI));
+   im.body.appendChild(saveCfgBtn('保存聊天机制',function(){return {behavior:{chunkMax:Number(cmI.value)||3,contextRounds:Number(crI.value)||16}}}));
+   im.body.appendChild(mut('「最多拆几条」1-8；真人一般 1-3 条，太多像刷屏。「记得最近几轮」2-100；越大越连贯，每次回复也越费 token。'));
+  }).catch(function(){});
+  var sv=btn('保存全部模型配置','pri',function(){sv.disabled=true;api('POST','panel/config',{chat:CFG.chat,image:CFG.image,tts:CFG.tts,asr:CFG.asr,vision:CFG.vision,embed:CFG.embed,params:{temperature:t1v},behavior:{voiceRate:t2v/100}}).then(function(){st.className='ok';st.textContent='模型配置已保存 ✅ 立即生效';sv.textContent='已保存 ✅';setTimeout(function(){sv.textContent='保存全部模型配置';sv.disabled=false},1500)}).catch(function(e){alert(e.message);sv.disabled=false})});
+  S['ai-params'].appendChild(sv);
+  var foot=document.createElement('div');foot.className='secFoot';foot.appendChild(mut('提示：世界引擎的 API 不在这一页——它是「她」页底部单独的一套（必须独立）。'));S['ai-params'].appendChild(foot);
+ }).catch(function(e){box.innerHTML='';box.appendChild(mut('加载失败: '+e.message))});
+}
+/* ── 她（人设 v5：分区折叠 + 左侧目录 + 自适应多列 + 状态指标格） ── */
+function tPersona(box){
+ box.innerHTML='';box.appendChild(mut('加载中…'));
+ api('GET','panel/persona').then(function(p0){
+  var p=p0.persona;
+  box.innerHTML='';
+  var SECS=[
+   {id:'sec-identity',icon:'🪪',title:'她是谁',desc:'身份 · 背景 · 兴趣 · 说话细节'},
+   {id:'sec-traits',icon:'🧠',title:'性格',desc:'MBTI → 八维 → 六维'},
+   {id:'sec-rhythm',icon:'⏰',title:'生活节奏',desc:'作息 · 波动 · 概率 · 主动'},
+   {id:'sec-status',icon:'🎭',title:'她的状态',desc:'压力 · 变形 · 周结算账本'},
+   {id:'sec-album',icon:'📷',title:'相册',desc:'她拍的生活照 · 一键发到微信'},
+   {id:'sec-archive',icon:'💾',title:'存档',desc:'保存与切换'},
+   {id:'sec-ability',icon:'📋',title:'她的能力清单',desc:'她会什么 / 还不会什么（她本人也看得到）'}
+  ];
+  var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+  wrap.appendChild(tocFor(SECS));
+  var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+  var st=mut('改完点「保存人设」立即生效（无版本号）');
+  var aname=document.createElement('input');aname.placeholder='给当前人设起个存档名…';aname.style.maxWidth='240px';
+  var relCard=document.createElement('div');relCard.className='card';
+  var relLine=mut('关系：读取中…');relLine.style.gridColumn='1/-1';
+  var relBtn=btn('去「你们」页看关系','',function(){go('relation')});
+  relCard.appendChild(row(btn('保存人设','pri',function(b2){doSave(b2)}),aname,btn('存档为…','',function(){doArchive()}),relBtn));
+  relCard.appendChild(st);relCard.appendChild(relLine);
+  api('GET','panel/today').then(function(r0){var R=(r0||{}).relation||{};
+   relLine.textContent='她与你的关系：'+(R.stage||'刚认识')+'（亲密度 '+(R.affection||0)+'/100'+(R.next?('，再涨 '+R.next.need+' 点到「'+R.next.label+'」'):'')+'）——阶段、称呼、她的日记都在「你们」页。';
+  }).catch(function(){relLine.textContent='关系信息读取失败';});
+  body.appendChild(relCard);
+  body.appendChild(mut('💡 大分区默认展开、可整体收起；分区里的每个小项点开才显示内容。左上「本页目录」可一键跳转。'));
+  var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+  function doSave(b2){if(b2)b2.disabled=true;api('POST','panel/persona',p).then(function(r2){p=r2.persona;st.className='ok';st.textContent='已保存 ✅ 立即生效'}).catch(function(e){st.className='er';st.textContent='保存失败：'+e.message}).then(function(){if(b2)b2.disabled=false})}
+  function doArchive(){if(!aname.value){alert('先起个存档名');return}api('POST','panel/persona',{})&&api('POST','panel/persona/archive',{name:aname.value}).then(function(){st.className='ok';st.textContent='已存档 ✅';aname.value='';loadArch()}).catch(function(e){alert(e.message)})}
+
+  /* ── ① 她是谁 ── */
+  var A=S['sec-identity'];
+  var it1=itemBlock('基础档案','名字 · 生日 · 城市 · 职业 · 年龄');A.appendChild(it1.el);
+  it1.body.appendChild(f('名字',inp(p.name,function(v){p.name=v})));
+  var bdInp=document.createElement('input');bdInp.type='date';bdInp.value=(/^\d{4}-\d{2}-\d{2}$/.test(String(p.birthday||''))?p.birthday:'');
+  var bdLine=mut('');
+  function drawBd(){
+   var info=bdayInfo(bdInp.value||p.birthday||'');
+   p.birthday=bdInp.value||'';
+   if(!info.valid){bdLine.className='er';bdLine.textContent='生日：'+info.hint;return}
+   var bits=[];
+   if(info.zodiac) bits.push(info.zodiac);
+   if(info.age!=null) bits.push(info.age+' 岁（按生日自动算）');
+   bdLine.className=info.hint?'mut':'ok';
+   bdLine.textContent='生日：'+info.iso+' → '+bits.join(' · ')+(info.hint?('　（'+info.hint+'）'):'');
+   if(info.age!=null) p.age=String(info.age);
+   ageLine.textContent=info.age!=null?('年龄：'+info.age+' 岁 —— 由生日自动算，不用手填'):'';
+   ageInp.style.display=info.age!=null?'none':'';
+  }
+  bdInp.onchange=drawBd;
+  bdInp.oninput=drawBd;
+  it1.body.appendChild(f('生日',bdInp));
+  var bdHint=mut('格式：1999-03-14（点右边的小日历选也行）。填了完整日期，星座和年龄都会自动算出来。');
+  it1.body.appendChild(bdHint);
+  bdLine.style.gridColumn='1/-1';it1.body.appendChild(bdLine);
+  it1.body.appendChild(f('城市',inp(p.city,function(v){p.city=v})));
+  it1.body.appendChild(f('职业',inp(p.job,function(v){p.job=v})));
+  var ageInp=inp(p.age,function(v){p.age=v},'如 24');
+  it1.body.appendChild(f('年龄',ageInp));
+  var ageLine=mut('');ageLine.style.gridColumn='1/-1';it1.body.appendChild(ageLine);
+  it1.body.appendChild(mut('职业一句话就够（例如"在三甲医院当护士，三班倒"）。系统会据此判断她的工作类型与作息，判断结果显示在「生活节奏 → 职业的影响」里，判错了你能直接改。'));
+  drawBd();
+  it1.body.appendChild(f('年龄',inp(p.age,function(v){p.age=v})));
+  it1.body.appendChild(mut('城市会用在真实天气查询里（她所在城市的阴晴会进她的生活和聊天）。'));
+  var it2=itemBlock('背景故事（她对外愿意讲的那部分）','越具体越像真人；空着=她会演成通用AI女友');A.appendChild(it2.el);
+  var bgWarn=mut('');bgWarn.style.gridColumn='1/-1';
+  var ta=document.createElement('textarea');ta.rows=6;ta.value=p.personaText||'';ta.onchange=function(e){p.personaText=e.target.value;drawBg()};
+  function drawBg(){
+   var v=String(ta.value||'').trim();
+   var blank=v.length<20||v.indexOf('人设背景故事')>=0;
+   bgWarn.className=blank?'er':'mut';
+   bgWarn.textContent=blank
+    ? '⚠️ 她的背景还是空的（或还是那句默认提示）——这样模型只能靠"通用AI女友"模板演，就会出现"刚认识就叫主人、温柔得像换了个人"。建议：去「女娲」跟她聊几句让她帮你写，或者在这里手写两三句（她是干什么的、性格怎样、和你的关系怎么开始的）。'
+    : '背景已填（'+v.length+' 字）——她的言行会以这段为准。';
+  }
+  it2.body.appendChild(ta);it2.body.appendChild(bgWarn);drawBg();
+  it2.body.appendChild(mut('这一栏是**她愿意对谁都能讲的那部分自己**（职业、城市、性格底色、日常喜好）——相当于"自我介绍"，也是你（作者）给她的核心设定。'
+   +String.fromCharCode(10)+'她的**家庭、经历、心结、真正的梦想**这些"更深一层"的过去**不放这里**，写在「世界 → 她的过去（分层）」里：那些她会看关系深浅一层层透露，不会一次说完。'
+   +String.fromCharCode(10)+'想让她把两层都补齐？去「女娲」用"过去访谈"聊一遍，她会替你问出来并分好层。'));
+  it2.body.appendChild(btn('去「世界」页填分层过去','',function(){go('world')}));
+  var it3=itemBlock('兴趣与口头禅','逗号分隔');A.appendChild(it3.el);
+  it3.body.appendChild(f('兴趣',inp((p.interests||[]).join('，'),function(v){p.interests=v.split(/[,，]/).map(function(x){return x.trim()}).filter(Boolean)})));
+  it3.body.appendChild(f('口头禅',inp(((p.quirks||{}).catchphrases||[]).join('，'),function(v){p.quirks=p.quirks||{};p.quirks.catchphrases=v.split(/[,，]/).map(function(x){return x.trim()}).filter(Boolean)})));
+  it3.body.appendChild(mut('兴趣会影响她"今天的痴迷话题"；口头禅是她说话时不自觉带的口头语。这两个都会**随她的生活慢慢变**：世界引擎满 7 天结算一次，变不变、变成什么由她的性格和职业决定（发起力高+秩序感低的人更爱尝新），她自己换的会留历史在「她的世界 → 兴趣与口头禅的变化」里；你在这里手改的不留历史。'));
+  var it4=itemBlock('说话细节','表情符号与手滑');A.appendChild(it4.el);
+  /* emoji 比例：改成滑杆 + 百分比 + 说人话的换算（"大约每 N 条消息带一个"），不再是个没单位的数字框 */
+  var emR=document.createElement('input');emR.type='range';emR.min=0;emR.max=100;emR.step=5;
+  emR.value=Math.round(((p.quirks||{}).emojiRate||0)*100);
+  var emL=mut('');
+  function drawEmoji(){
+   var v=Number(emR.value);
+   p.quirks=p.quirks||{};p.quirks.emojiRate=v/100;
+   var per=v<=0?'她基本不用 emoji':('平均每 '+Math.max(1,Math.round(100/v))+' 条消息里带 1 个');
+   emL.textContent='带 emoji 的消息比例 '+v+'%　——　'+per+'（只影响 😊 这类字符，不是微信表情包/图片）';
+  }
+  emR.oninput=drawEmoji;
+  it4.body.appendChild(mut('她用 emoji 的频率'));it4.body.appendChild(emR);it4.body.appendChild(emL);
+  drawEmoji();
+  var tq=document.createElement('input');tq.type='range';tq.min=0;tq.max=10;tq.step=1;tq.value=Math.round(((p.quirks||{}).typoRate||0)*100);
+  var tql=mut('手滑打错字概率 '+tq.value+'%');
+  tq.oninput=function(){tql.textContent='手滑打错字概率 '+tq.value+'%'+(Number(tq.value)<=0?'（关着：她不会发错）':'（平均每 '+Math.max(1,Math.round(100/Number(tq.value)))+' 条里有 1 次）');p.quirks=p.quirks||{};p.quirks.typoRate=Number(tq.value)/100};
+  it4.body.appendChild(tql);it4.body.appendChild(tq);
+  it4.body.appendChild(mut('手滑>0 时她会偶尔发错一条：一半概率干脆不纠正（反正你看得懂），一半概率把正确那句直接再发一遍——不会特意说"啊打错了"。建议 0~5%，太频繁会显得笨。'));
+
+  /* ── ② 性格 ── */
+  var T=S['sec-traits'];
+  var TR=[['socialBattery','社交电量','她今天还剩多少跟人说话的力气——低会说去躺会'],['warmth','情感温度','说话的温度：高=暖爱撒娇，低=话少直接'],['attachment','依恋强度','对你的联结需求：高=半小时不回就想你，低=淡定'],['sharpness','批判锐度','吐槽和一针见血的倾向——高=神吐槽，低=哄着你'],['initiative','发起力','主动开话题/分享/拉你干这干那的倾向'],['orderliness','秩序感','生活规律程度——直接控制作息随机的波动幅度']];
+  var mt=itemBlock('MBTI 底色','4 字母决定荣格八维功能栈');T.appendChild(mt.el);
+  mt.body.appendChild(f('MBTI',inp((p.assessments||{}).mbti||'',function(v){p.assessments=p.assessments||{};p.assessments.mbti=v.toUpperCase()},'如 INFP')));
+  mt.body.appendChild(btn('按MBTI重算六维','pri',function(b2){var mi2=mt.body.querySelector('input');if(!mi2.value){alert('先填4字母');return}b2.disabled=true;api('POST','panel/persona',{assessments:{mbti:mi2.value.toUpperCase()}}).then(function(r2){p=r2.persona;go('persona')}).catch(function(e){alert(e.message)}).then(function(){b2.disabled=false})}));
+  mt.body.appendChild(mut('底层=荣格八维功能栈（由 4 字母自动推导，永不改变）；六维由功能位置与性质推得，改完还能手动微调。'));
+  var t6=itemBlock('六维微调','拖动改变她的性格底色');T.appendChild(t6.el);
+  TR.forEach(function(d){var w=document.createElement('div');w.style.gridColumn='1/-1';var lb=document.createElement('label');lb.className='mut';lb.textContent=d[1]+'：'+((p.traits||{})[d[0]]==null?50:p.traits[d[0]])+'% —— '+d[2];w.appendChild(lb);
+   var rg=document.createElement('input');rg.type='range';rg.min=5;rg.max=95;rg.value=(p.traits||{})[d[0]]==null?50:p.traits[d[0]];rg.oninput=function(e){lb.textContent=d[1]+'：'+e.target.value+'% —— '+d[2];p.traits=p.traits||{};p.traits[d[0]]=Number(e.target.value)};w.appendChild(rg);t6.body.appendChild(w)});
+  t6.body.appendChild(mut('这六个数是"底色"；每天会在这个底色上小幅浮动（首页的 📊 徽章能看到今天飘了多少），长期还会被你们的相处慢慢改写。'));
+
+  /* ── ③ 生活节奏 ── */
+  var R=S['sec-rhythm'];var B=p.behavior=p.behavior||{};
+  var r1=itemBlock('回复速度与作息','底色与作息基准');R.appendChild(r1.el);
+  var spd=document.createElement('select');[['human','拟人（推荐）'],['instant','偏快'],['slow','偏慢热']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];if((B.replySpeed||'human')===o[0])op.selected=true;spd.appendChild(op)});
+  spd.onchange=function(e){B.replySpeed=e.target.value};
+  r1.body.appendChild(f('回复速度',spd));
+  r1.body.appendChild(f('基准起床',inp(B.baseWake||'07:30',function(v){B.baseWake=v.trim()||'07:30'},'07:30')));
+  r1.body.appendChild(f('基准睡觉',inp(B.baseSleep||'23:30',function(v){B.baseSleep=v.trim()||'23:30'},'23:30')));
+  r1.body.appendChild(mut('时间一律用 24 小时制（00:00–23:59）：08:00 = 早上八点、14:00 = 下午两点、02:00 = 凌晨两点。'
+   +String.fromCharCode(10)+'「基准睡觉」填得比起床早（比如 02:00）就是"次日凌晨睡"——系统按跨天算：'
+   +String.fromCharCode(10)+'她会在凌晨 1:00~4:00 之间说晚安，不会在下午说。早晚安都只在各自的时间窗内发，错过了就不补发。'));
+  var r2=itemBlock('每天的人味随机','每天自动掷骰，性格影响概率');R.appendChild(r2.el);
+  var jt=document.createElement('input');jt.type='range';jt.min=0;jt.max=600;jt.value=B.jitterMin==null?45:B.jitterMin;var jtl=mut('作息波动 ±'+jt.value+' 分钟（最高±600）');jt.oninput=function(){jtl.textContent='作息波动 ±'+jt.value+' 分钟';B.jitterMin=Number(jt.value)};r2.body.appendChild(jtl);r2.body.appendChild(jt);
+  var no=document.createElement('input');no.type='range';no.min=0;no.max=100;no.value=Math.round((B.nightOwlProb==null?0.15:B.nightOwlProb)*100);var nol=mut('夜猫日概率 '+no.value+'%（当天推迟1-3小时睡）');no.oninput=function(){nol.textContent='夜猫日概率 '+no.value+'%';B.nightOwlProb=Number(no.value)/100};r2.body.appendChild(nol);r2.body.appendChild(no);
+  var an=document.createElement('input');an.type='range';an.min=0;an.max=100;an.value=Math.round((B.allNighterProb==null?0.03:B.allNighterProb)*100);var anl=mut('熬通宵概率 '+an.value+'%（次日赖床补觉）');an.oninput=function(){anl.textContent='熬通宵概率 '+an.value+'%';B.allNighterProb=Number(an.value)/100};r2.body.appendChild(anl);r2.body.appendChild(an);
+  var wk=document.createElement('input');wk.type='range';wk.min=0;wk.max=180;wk.value=B.weekendShiftMin==null?60:B.weekendShiftMin;var wkl=mut('周末起床推迟（上限） '+wk.value+' 分钟');wk.oninput=function(){wkl.textContent='周末起床推迟（上限） '+wk.value+' 分钟';B.weekendShiftMin=Number(wk.value)};r2.body.appendChild(wkl);r2.body.appendChild(wk);
+  r2.body.appendChild(mut('周末那个是"上限"，实际每天在 30%~100% 之间随机——所以周末不会每天都一样晚起。'));
+  var r3=itemBlock('主动与催促','她多久找你、多久没回她会等');R.appendChild(r3.el);
+  r3.body.appendChild(f('每日主动次数',inp(B.activePerDay==null?3:B.activePerDay,function(v){B.activePerDay=Number(v)||3},'3','number')));
+  r3.body.appendChild(f('多久没回她会等',inp(B.pokeMinutes==null?30:B.pokeMinutes,function(v){B.pokeMinutes=Number(v)||30},'30','number')));
+  r3.body.appendChild(f('每天最多等几次',inp(B.pokeMaxPerDay==null?2:B.pokeMaxPerDay,function(v){B.pokeMaxPerDay=Number(v)||2},'2','number')));
+  r3.body.appendChild(mut('「每日主动次数」是基准值，实际每天随机浮动（还受她的发起力影响）；「多久没回她会等」= 你已读不回超过这个分钟数，她才会来催一次。'));
+  var ra=itemBlock('主动消息（她主动找你）','开关与时段');R.appendChild(ra.el);
+  api('GET','panel/config').then(function(r2){var LF=(r2.config||{}).life||{};
+   var lfOn=document.createElement('input');lfOn.type='checkbox';lfOn.checked=LF.enabled!==false;
+   ra.body.appendChild(row(lfOn,document.createTextNode('总开关（关掉=她不再主动发消息，但你找她她照常回）')));
+   var mgOn=document.createElement('input');mgOn.type='checkbox';mgOn.checked=LF.morningOn!==false;
+   var ntOn=document.createElement('input');ntOn.type='checkbox';ntOn.checked=LF.nightOn!==false;
+   ra.body.appendChild(row(mgOn,document.createTextNode('早安（起床±25分钟）'),ntOn,document.createTextNode('晚安（睡觉±20分钟）')));
+   var pwv=(LF.pokeWindow||['10:00','22:00']);
+   var pwI=inp(pwv[0]+'-'+pwv[1],function(v){},'10:00-22:00');
+   ra.body.appendChild(f('日常分享时段',pwI));
+   ra.body.appendChild(saveCfgBtn('保存主动消息设置',function(){
+    var m=String(pwI.value||'').split('-');
+    var okT=/^[0-9]{1,2}:[0-9]{2}$/;
+    var win=(okT.test((m[0]||'').trim())&&okT.test((m[1]||'').trim()))?[m[0].trim(),m[1].trim()]:['10:00','22:00'];
+    return {life:{enabled:lfOn.checked,morningOn:mgOn.checked,nightOn:ntOn.checked,pokeWindow:win}};
+   }));
+   ra.body.appendChild(mut('催人（nudge）：你已读不回超过设定时长，她才会来催一次，每天有次数上限——这是"她在等你"，不是骚扰。'));
+  }).catch(function(){});
+  var foot=document.createElement('div');foot.className='secFoot';
+  foot.appendChild(btn('保存生活节奏','pri',function(b2){b2.disabled=true;api('POST','panel/persona',{behavior:B}).then(function(){st.className='ok';st.textContent='生活节奏已保存 ✅ 立即生效'}).catch(function(e){st.className='er';st.textContent='失败：'+e.message}).then(function(){b2.disabled=false})}));
+  foot.appendChild(mut('只保存这一块'));
+  R.appendChild(foot);
+
+  /* ── ③b 职业的影响（职业给场景，性格给强度） ── */
+  var jb=itemBlock('职业的影响','她自己判断怎么上班 · 作息 · 工作日程 · 同事客户 · 朋友圈 · 压力');R.appendChild(jb.el);
+  var jInfo=mut('正在读取职业判断…');jInfo.style.gridColumn='1/-1';jb.body.appendChild(jInfo);
+  var jBtn=btn('重新判断一次','',function(b2){
+   b2.disabled=true;jInfo.className='mut';jInfo.textContent='正在判断…（用对话模型，约 3-8 秒）';
+   api('POST','panel/job/infer',{}).then(function(r){
+    if(!r.ok){jInfo.className='er';jInfo.textContent='判断失败：'+(r.error||'未知')+'（已用关键词兜底）';return}
+    drawJ(r.config||r.job);
+   }).catch(function(e){jInfo.className='er';jInfo.textContent='判断失败：'+e.message}).then(function(){b2.disabled=false});
+  });
+  function drawJ(J2){
+   var srcTxt={world:'世界引擎昨晚判断的（最懂她的生活）',model:'保存职业时用对话模型判断的',keyword:'关键词兜底判断的'}[J2.source]||'还没判断过';
+   var lines=['职业：'+(P_JOB||'（还没填）'),'判断结果：'+(J2.label||'—')+(J2.workStart?('　上班 '+J2.workStart+' - '+J2.workEnd):'')+(J2.workDays?('　工作日 '+J2.workDays+'（0=周日）'):''),'来源：'+srcTxt];
+   if(J2.reason)lines.push('理由：'+J2.reason);
+   if(J2.inferredAt)lines.push('判断时间：'+new Date(J2.inferredAt).toLocaleString('zh-CN')+'（改完职业记得点保存人设，它会自动重判）');
+   jInfo.className='mut';jInfo.textContent=lines.join(String.fromCharCode(10));
+  }
+  var P_JOB='';
+  api('GET','panel/config').then(function(r2){
+   var J=(r2.config||{}).job||{};
+   api('GET','panel/persona').then(function(p2){P_JOB=((p2||{}).persona||{}).job||'';drawJ(J)}).catch(function(){drawJ(J)});
+   var on=document.createElement('input');on.type='checkbox';on.checked=J.enabled!==false;
+   jb.body.appendChild(row(on,document.createTextNode('启用职业机制（关掉=职业只是一句人设，不影响作息/日程/圈子）')));
+   jb.body.appendChild(row(jBtn,mut('判断不对？点这里重判，或直接在下面手动改')));
+   var ty=document.createElement('select');
+   [['','自动（她判断什么就用什么）'],['office','上班族（朝九晚六）'],['shift','排班制'],['freelance','自由职业'],['night','夜班'],['student','学生'],['none','无固定工作']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];if((J.type||'')===o[0])op.selected=true;ty.appendChild(op)});
+   jb.body.appendChild(f('手动指定类型',ty));
+   var ws=inp(J.workStart||'09:00',function(v){},'09:00');jb.body.appendChild(f('上班时间',ws));
+   var we=inp(J.workEnd||'18:00',function(v){},'18:00');jb.body.appendChild(f('下班时间',we));
+   var wd=inp(J.workDays||'1,2,3,4,5',function(v){},'1,2,3,4,5');jb.body.appendChild(f('工作日（0=周日）',wd));
+   var iv=document.createElement('input');iv.type='range';iv.min=0;iv.max=200;iv.step=10;iv.value=Math.round((J.intensity==null?1:J.intensity)*100);
+   var ivl=mut('职业影响强度 '+(J.intensity==null?100:Math.round(J.intensity*100))+'%');
+   iv.oninput=function(){ivl.textContent='职业影响强度 '+iv.value+'%'};
+   jb.body.appendChild(ivl);jb.body.appendChild(iv);
+   jb.body.appendChild(mut('强度管的是"职业这个因素本身有多重"：0% = 职业不影响生活节奏（她照样上班，但不累不忙）；100% = 正常；200% = 工作狂，忙日更多、下班更没力气。真正的"她容易被工作搞崩吗"还由性格决定——秩序感低+依恋高的人，加班掉得更多。'));
+   var nc=inp(J.npcCount==null?2:J.npcCount,function(v){},'2','number');jb.body.appendChild(f('社交圈里的同事数',nc));
+   var sw=(key,label)=>{
+    var el=document.createElement('input');el.type='checkbox';el.checked=J[key]!==false;
+    jb.body.appendChild(row(el,document.createTextNode(label)));
+    return el;
+   };
+   var sSched=sw('toSchedule','① 影响作息与忙碌（上班日早起、忙日更多、下班后更没电量）');
+   var sNpc=sw('toNpc','② 同事/客户进她的社交圈（世界引擎维护，聊天里会自然提到）');
+   var sMom=sw('toMoments','③ 朋友圈内容偏向职业（赶稿/客户/同事吐槽）');
+   var sStr=sw('toStress','④ 工作压力进变形状态机（加班到很晚→压力累积，可能触发劣势爆发/反刍）');
+   var jSave=saveCfgBtn('保存职业设置',function(){return {job:{enabled:on.checked,type:ty.value,workStart:ws.value,workEnd:we.value,workDays:wd.value,intensity:Number(iv.value)/100,npcCount:Number(nc.value)||0,toSchedule:sSched.checked,toNpc:sNpc.checked,toMoments:sMom.checked,toStress:sStr.checked}}});
+   jb.body.appendChild(row(jSave,mut('你只填职业，机器负责判断；这里的结果判错了可以随时改')));
+   jb.body.appendChild(mut('两条链路：①世界引擎每晚跑成功时，它会自己判断她明天怎么上班（优先用它）②没跑成功时，用保存职业那一刻的模型判断（立刻生效）；模型也失败就用关键词兜底。四条机制都能单独关：只想要"上下班的作息感"就关掉②③④；只想让朋友圈有职业味就只开③。关掉的项目会在她的"能力清单"里如实说明。'));
+   api('GET','panel/today').then(function(r3){var j=(r3||{}).today&&r3.today.job;if(!j){jb.body.appendChild(mut('今天：职业机制没启用（或还没填职业）'));return}
+    jb.body.appendChild(mut('今天：'+(j.workday?'是工作日（'+(j.label||'')+'）':'不是工作日')+(j.workStart?('，作息参照 '+j.workStart+'-'+j.workEnd):'')+'　·　来源 '+(j.source==='world'?'世界引擎':(j.source==='config'?'职业判断':'—'))+'　·　今天的工作负荷看「她的状态」和「她的世界」'));
+   }).catch(function(){});
+  }).catch(function(){});
+
+  /* ── ④ 她的状态（指标格） ── */
+  var K=S['sec-status'];
+  var k1=itemBlock('当前状态','压力 · 状态 · 整合度 · 账本');k1.el.open=true;K.appendChild(k1.el);
+  var km=metricsWrap();k1.body.appendChild(km);
+  var kExtra=mut('');k1.body.appendChild(kExtra);
+  var k2=itemBlock('原理与参数','开关 · 灵敏度 · 三个阈值');K.appendChild(k2.el);
+  k2.body.appendChild(mut('底色（认知功能栈）永不变，变的只是压力下的表达。阈值1「劣势爆发」：说话冲、爱较真、说反话，嘴硬不承认；阈值2「反刍循环」：同一件事绕不出来、越说越封闭；阈值3「影子状态」：平时绝不会说的话会冒出来。被哄 −12 / 睡得好 −10 / 每天自然 −15 会减压，平静后逐层退出，那一轮她会自然道歉或自嘲；每缓过来一次整合度 +2（上限 80）——下次更不容易被逼变形。'));
+  var DF={enabled:true,sensitivity:1,grip:45,loop:70,shadow:88};
+  var dfOn=document.createElement('input');dfOn.type='checkbox';dfOn.checked=true;dfOn.onchange=function(e){DF.enabled=e.target.checked};
+  k2.body.appendChild(row(dfOn,document.createTextNode('启用变形状态机（关掉=她永远稳态，压力不再影响回复）')));
+  var seR=document.createElement('input');seR.type='range';seR.min=0.2;seR.max=3;seR.step=0.1;seR.value=1;
+  var seL=mut('灵敏度 ×1（只放大加压，不影响被哄减压）');
+  seR.oninput=function(){DF.sensitivity=Number(seR.value);seL.textContent='灵敏度 ×'+seR.value};
+  k2.body.appendChild(seL);k2.body.appendChild(seR);
+  [['grip','阈值1·劣势爆发',10,95],['loop','阈值2·反刍循环',20,98],['shadow','阈值3·影子状态',30,100]].forEach(function(t){
+   var rg=document.createElement('input');rg.type='range';rg.min=t[2];rg.max=t[3];rg.step=1;
+   var lb=mut(t[1]+' '+DF[t[0]]);
+   rg.oninput=function(){DF[t[0]]=Number(rg.value);lb.textContent=t[1]+' '+rg.value};
+   rg.dataset.k=t[0];
+   k2.body.appendChild(lb);k2.body.appendChild(rg);
+  });
+  k2.body.appendChild(mut('加压事件：被凶/被怼 +18 · 她熬通宵 +25 · 被冷落 +15 · 冲突 +20 · 被工作压垮 +20（世界引擎每晚报的工作负荷≥50 才触发，负荷越高加得越多；开关在「生活节奏 → 职业的影响」里）；加压总量 = 基础值 × 灵敏度 × 事件强度。'));
+  k2.body.appendChild(btn('保存变形设置','pri',function(b2){b2.disabled=true;api('POST','panel/config',{deform:DF}).then(function(){kExtra.className='ok';kExtra.textContent='变形设置已保存 ✅ 立即生效'}).catch(function(e){alert(e.message)}).then(function(){b2.disabled=false})}));
+  api('GET','panel/config').then(function(r2){var d=(r2.config||{}).deform||{};if(d.enabled!==undefined)dfOn.checked=d.enabled!==false;if(d.sensitivity)seR.value=d.sensitivity;if(d.grip)DF.grip=d.grip;if(d.loop)DF.loop=d.loop;if(d.shadow)DF.shadow=d.shadow;
+   seL.textContent='灵敏度 ×'+(d.sensitivity||1);
+   k2.querySelectorAll('input[type=range][data-k]').forEach(function(rg){var k=rg.dataset.k;if(d[k])rg.value=d[k];var nm={grip:'阈值1·劣势爆发',loop:'阈值2·反刍循环',shadow:'阈值3·影子状态'};rg.previousSibling.textContent=nm[k]+' '+rg.value})}).catch(function(){});
+  api('GET','panel/today').then(function(r2){var d=(r2||{}).deform||{},ev=(r2||{}).evolution||{};
+   var NM={normal:'正常',grip:'劣势爆发',loop:'反刍循环',shadow:'影子状态'};
+   var stt=d.state||'normal';var cls=stt==='normal'?'':(stt==='shadow'?'bad':'warn');
+   km.innerHTML='';
+   km.appendChild(metric('压力',(d.stress||0)+' <small>/100</small>',bar(d.stress||0,(d.stress>=70?'bad':(d.stress>=45?'warn':'')))));
+   km.appendChild(metric('当前状态','<span class="tag '+(cls==='bad'?'bad':(cls==='warn'?'warn':''))+'">'+(NM[stt]||stt)+'</span>'));
+   km.appendChild(metric('整合度',(d.integration||0)+' <small>/80</small>',bar(Math.round(((d.integration||0)/80)*100))));
+   km.appendChild(metric('生效阈值',((d.thresholds||{}).grip||45)+' / '+((d.thresholds||{}).loop||70)+' / '+((d.thresholds||{}).shadow||88)));
+   var T2=(r2||{}).today||{};
+   var dr=T2.traitDrift||{},rs=Array.isArray(T2.driftReasons)?T2.driftReasons:[];
+   var DN={socialBattery:'社交电量',warmth:'情感温度',attachment:'依恋强度',sharpness:'批判锐度',initiative:'发起力',orderliness:'秩序感'};
+   var dTxt=Object.keys(dr).filter(function(k){return dr[k]}).map(function(k){return DN[k]+(dr[k]>0?'+':'')+dr[k]}).join(' / ')||'今天没飘';
+   var rTxt=rs.slice(-3).map(function(x){return x.label+(x.note?'（"'+x.note+'"）':'')}).join(' · ')||'还没有当天事件';
+   kExtra.className='mut';
+   kExtra.textContent='上次变形：'+(d.lastGripAt?new Date(d.lastGripAt).toLocaleString('zh-CN'):'还没变形过')+'　·　最近事件：'+(d.lastEvent||'—')+String.fromCharCode(10)
+    +'今天六维浮动：'+dTxt+'（今日电量 '+(T2.battery==null?'—':T2.battery)+'）'+String.fromCharCode(10)
+    +'今天为什么飘：'+rTxt+String.fromCharCode(10)
+    +'（性格周结算账本搬到了「世界 → 她的成长」）';
+  }).catch(function(e){kExtra.textContent='（加载失败：'+((e&&e.message)||e)+'）'});
+
+
+  /* ── 📷 相册（她拍的生活照） ── */
+  (function(){
+   var AB=S['sec-album'];
+   var al1=itemBlock('最新照片','生成 / 发送到微信 / 删除');al1.el.open=true;AB.appendChild(al1.el);
+   var grid=document.createElement('div');grid.style.cssText='grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px';
+   var albHint=mut('加载中…');albHint.style.gridColumn='1/-1';
+   al1.body.appendChild(grid);al1.body.appendChild(albHint);
+   function loadAlb(){
+    api('GET','panel/album').then(function(r){
+     var items=r.items||[];grid.innerHTML='';
+     albHint.className='mut';
+     albHint.textContent=items.length?('共 '+items.length+' 张 · 生成入口在「女娲 → 形象工坊 → 拍生活照」或者下面的快捷生成'):'还没有照片。去「女娲 → 形象工坊」上传她的形象定稿图，再点"生成一张"。';
+     items.forEach(function(x){
+      var pCard=document.createElement('div');pCard.style.cssText='width:190px;border:1px solid #e6e9ec;border-radius:10px;overflow:hidden;background:#fff';
+      var img=document.createElement('img');img.src='/wechat-companion/'+x.url;img.style.cssText='width:100%;height:190px;object-fit:cover;display:block';
+      var cap=document.createElement('div');cap.className='mut';cap.style.cssText='padding:5px 8px;font-size:12px';
+      cap.textContent=new Date(x.createdAt).toLocaleString('zh-CN').slice(5,16)+' · '+(x.mode==='i2i'?'图生图':'文生图')+(x.sentAt?' · 已发过微信':'');
+      var acts=row(
+       btn('发到微信','pri',function(b2){b2.disabled=true;var old=cap.textContent;
+        api('POST','panel/album/send',{id:x.id}).then(function(){cap.textContent=old+' · 发送成功 ✅'}).catch(function(e){alert('发送失败：'+e.message)}).then(function(){b2.disabled=false})}),
+       btn('删除','dg',function(){if(window.confirm('删除这张照片？'))api('POST','panel/album/delete',{id:x.id}).then(loadAlb)}));
+      acts.style.padding='0 8px 8px';
+      pCard.appendChild(img);pCard.appendChild(cap);pCard.appendChild(acts);
+      grid.appendChild(pCard);
+     });
+    }).catch(function(e){albHint.className='er';albHint.textContent='读取失败：'+e.message});
+   }
+   var al2=itemBlock('快捷生成','不想跳页就这儿点');AB.appendChild(al2.el);
+   var qScene=inp('',function(v){},'雨天窝在沙发里，抱着猫，室内暖光');
+   al2.body.appendChild(f('场景描述',qScene,'lg'));
+   var qOut=mut('');qOut.style.gridColumn='1/-1';
+   al2.body.appendChild(btn('生成一张生活照','pri',function(b2){
+    b2.disabled=true;qOut.className='mut';qOut.textContent='正在生成…（10~40 秒）';
+    api('POST','panel/album/generate',{scene:qScene.value,mode:'i2i'}).then(function(r){
+     qOut.className='ok';qOut.textContent='生成成功 ✅ '+Math.round((r.item.bytes||0)/1024)+'KB（'+r.item.ms+'ms）';loadAlb();
+    }).catch(function(e){qOut.className='er';qOut.textContent='失败：'+e.message}).then(function(){b2.disabled=false});
+   }));
+   al2.body.appendChild(qOut);
+   al2.body.appendChild(mut('照片存在本机数据目录的 album/ 里，不会上传到别处（除了你点"发到微信"时经微信 CDN 发给你自己）。发图能力已实测可用 ✅'));
+   loadAlb();
+  })();
+
+  /* ── 📋 她的能力清单（功能状态单一数据源，她本人也看得到） ── */
+  tFeatures(S['sec-ability']);
+
+  /* ── ⑥ 存档 ── */
+  var V=S['sec-archive'];
+  var v1=itemBlock('保存与存档','保存立即生效，无版本号堆积');V.appendChild(v1.el);
+  v1.body.appendChild(row(btn('保存人设','pri',function(b2){doSave(b2)}),btn('存档为…','',function(){doArchive()}),mut('存档名写在页面顶部输入框')));
+  v1.body.appendChild(mut('「保存人设」= 把这一页所有改动写进她（立即生效）；「存档为…」= 把当前整个人设存一份，随时能一键切回去。'));
+  var v2=itemBlock('历史存档','点一下切回那个她');V.appendChild(v2.el);
+  var alist=document.createElement('div');alist.style.gridColumn='1/-1';v2.body.appendChild(alist);
+  function loadArch(){api('GET','panel/persona/archives').then(function(r2){alist.innerHTML='';(r2.archives||[]).forEach(function(a){var b=bx();
+    b.innerHTML='<b>'+esc(a.name)+'</b> <span class=mut>'+new Date(a.savedAt).toLocaleString('zh-CN')+' · '+esc(a.personaName||'')+'</span>';
+    b.appendChild(row(
+     btn('一键切换','pri',function(){api('POST','panel/persona/switch',{id:a.id}).then(function(){go('persona')}).catch(function(e){alert(e.message)})}),
+     btn('改名','',function(){var n=window.prompt('新名字：',a.name);if(n)api('POST','panel/persona/rename',{id:a.id,name:n}).then(function(){loadArch()})}),
+     btn('删除','dg',function(){if(window.confirm('删除存档「'+a.name+'」？'))api('POST','panel/persona/archive-delete',{id:a.id}).then(loadArch)})
+    ));
+    alist.appendChild(b);})}).catch(function(){})}
+  loadArch();
+ }).catch(function(e){box.innerHTML='';box.appendChild(mut('加载失败: '+e.message))});
+}
+/* ── 记忆（mem0 引擎 · 分区折叠） ── */
+function tMemory(box){
+ box.innerHTML='';box.appendChild(mut('加载中…'));
+ var SECS=[
+  {id:'mem-engine',icon:'🔌',title:'引擎',desc:'mem0 / 本地兜底 · 迁移'},
+  {id:'mem-bidir',icon:'🔁',title:'双向记忆',desc:'她也记得自己说过什么'},
+  {id:'mem-list',icon:'📚',title:'她记得的事',desc:'搜索 · 编辑 · 钉住 · 导出'},
+  {id:'mem-extract',icon:'⚙️',title:'提炼设置',desc:'用哪个模型整理记忆'}
+ ];
+ var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+ wrap.appendChild(tocFor(SECS));
+ var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+ var st=mut('');body.appendChild(st);
+ var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+ api('GET','panel/mem-engine').then(function(r){
+  if(r.running&&r.info&&r.info.ready===false){st.className='er';st.textContent='引擎在跑但还不能用：'+(r.info.reason||'未配置')+' —— 去「大脑」页保存对话模型后 1 分钟内自动恢复'}
+  else if(r.running){st.className='ok';st.textContent='mem0 记忆引擎运行中 ✅ '+((r.info&&r.info.llm)?('提炼模型: '+r.info.llm+' · '):'')+'嵌入: '+((r.info&&r.info.embedder)||'bge-m3')}
+  else{st.className='er';st.textContent='记忆引擎未运行（本地JSON兜底）— 双击「启动记忆引擎.bat」，或重启DSH时自动拉起'}
+ }).catch(function(){});
+ Promise.all([api('GET','panel/memory'),loadCfg()]).then(function(rs){
+  var view=rs[0]||{};var entries=(view.entries||[]);// loadCfg() 直接给的就是配置对象（别再 .config 一次，否则永远空）
+  var cfg=(rs[1]&&rs[1].config)?rs[1].config:(rs[1]||{});
+  if(view.engine==='mem0'){st.className=(st.className==='er'?st.className:'ok');st.textContent=(st.textContent||'')+'　·　记忆 '+entries.length+' 条'}
+  box.innerHTML='';box.appendChild(mut('这里是她的记忆库：她记得你说过的事，也记得自己说过的话。'));
+  var wrap2=document.createElement('div');wrap2.className='pageWrap';box.appendChild(wrap2);
+  wrap2.appendChild(tocFor(SECS));
+  var body2=document.createElement('div');body2.className='pageBody';wrap2.appendChild(body2);
+  body2.appendChild(st);
+  var S2={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S2[x.id]=sb.body;body2.appendChild(sb.el)});
+
+  /* ① 引擎 */
+  var e1=itemBlock(view.engine==='mem0'?'mem0 引擎（自动提炼 · 去重合并 · 向量检索）':'本地 JSON（兜底模式）','');S2['mem-engine'].appendChild(e1.el);
+  if(view.engine==='mem0'){
+   e1.body.appendChild(btn('把旧JSON记忆搬进新引擎','',function(b2){b2.disabled=true;b2.textContent='迁移中…';api('POST','panel/memory/migrate',{}).then(function(r){b2.textContent='✓ 新迁 '+r.added+' 条 · 跳过重复 '+(r.skipped||0)+' 条';setTimeout(function(){b2.textContent='把旧JSON记忆搬进新引擎';b2.disabled=false},2500)}).catch(function(e){b2.textContent='失败';alert(e.message)})}));
+   e1.body.appendChild(mut('迁移很安全：幂等去重，重复点只跳过。旧 memory.json 同时作为兜底镜像持续同步（引擎挂了也不丢一条）。'));
+   if(view.legacyCount!=null)e1.body.appendChild(mut('本地 JSON 镜像档案：'+view.legacyCount+' 条（每日随数据目录自动备份）'));
+  } else {
+   e1.body.appendChild(mut('引擎没开时她用旧引擎记事，一切照常，只是没有自动去重和淡忘。'));
+  }
+
+  /* ② 双向记忆 */
+  var e2=itemBlock('双向记忆','她记得自己说过的话；可关可改');S2['mem-bidir'].appendChild(e2.el);
+  e2.body.appendChild(mut('单向记忆只记"你说了什么"，她聊完就断片、前后自相矛盾。双向记忆把她的关键自述（立场/打算/喜好/约定，如"我下周要去趟杭州"）单独归档为「她自己的话」，检索时和"你的事"一起被想起，并在提示词里要求她与自己的话保持一致——这样她才有自己的立场和前后联动。'));
+  var selfOn=document.createElement('input');selfOn.type='checkbox';selfOn.checked=(cfg.memory||{}).selfMemory!==false;
+  var sNote=mut('');
+  selfOn.onchange=function(){api('POST','panel/config',{memory:{selfMemory:selfOn.checked}}).then(function(){sNote.className='ok';sNote.textContent=selfOn.checked?'已开启双向记忆 ✅':'已关闭（她不再记自己的话）'}).catch(function(e){alert(e.message);selfOn.checked=!selfOn.checked})};
+  e2.body.appendChild(row(selfOn,document.createTextNode('让她记住自己说过的话（关掉=只记你说的）')));
+  e2.body.appendChild(sNote);
+  var selfMems=entries.filter(function(e){return e.who==='self'||e.source==='self'});
+  if(selfMems.length){
+   e2.body.appendChild(mut('她自己的话（共 '+selfMems.length+' 条，最近 8 条）：'));
+   selfMems.slice().sort(function(a,b){return b.ts-a.ts}).slice(0,8).forEach(function(e){e2.body.appendChild(mut('· '+e.text+'（'+new Date(e.ts).toLocaleDateString('zh-CN')+'）'))});
+   e2.body.appendChild(mut('这些条目在「她记得的事」里也能搜到、能改能删（来源徽章显示 self）。'));
+  } else {
+   e2.body.appendChild(mut('还没有她自己的话——等她聊到"我要/我打算/我决定/我最近…"这类自己表态的话，就会自动归档一条。'));
+  }
+
+  /* ③ 她记得的事 */
+  var FILTER='';var ONLYPIN=false;var SORT='time';
+  var e3=itemBlock('教她记一件事','你说了她会记住（重要度越高越难忘）');S2['mem-list'].appendChild(e3.el);
+  var txt=document.createElement('input');txt.placeholder='例如：主人不吃香菜';
+  var imp=document.createElement('input');imp.type='number';imp.min=1;imp.max=5;imp.value=4;imp.style.maxWidth='80px';
+  var tags=document.createElement('input');tags.placeholder='标签（逗号分隔，可选）';
+  e3.body.appendChild(f('内容',txt));
+  e3.body.appendChild(f('重要度',imp));
+  e3.body.appendChild(f('标签',tags));
+  e3.body.appendChild(btn('记住','pri',function(){if(!txt.value)return;api('POST','panel/memory',{op:'add',text:txt.value,importance:Number(imp.value),tags:tags.value.split(/[,，]/).map(function(x){return x.trim()}).filter(Boolean),who:(FILTER&&FILTER!=='通用')?FILTER:''}).then(function(){go('memory')}).catch(function(e){alert(e.message)})}));
+  var e4=itemBlock('记忆列表','搜索 · 过滤 · 排序 · 导出');e4.el.open=true;S2['mem-list'].appendChild(e4.el);
+  var q=document.createElement('input');q.placeholder='🔍 搜索（正文和标签都会搜）…';
+  e4.body.appendChild(f('搜索',q));
+  var pinB=btn('只看📌','',function(){ONLYPIN=!ONLYPIN;pinB.className=ONLYPIN?'pri':'';render()});
+  var so=document.createElement('select');[['time','按时间排序'],['imp','按重要度排序']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];so.appendChild(op)});so.onchange=function(){SORT=so.value;render()};
+  e4.body.appendChild(f('排序',so));
+  var whoChips=document.createElement('div');whoChips.className='chips';whoChips.style.gridColumn='1/-1';
+  var whos={};entries.forEach(function(e){var w=(e.who==='self')?'她自己的话':(e.who||'通用');whos[w]=(whos[w]||0)+1});
+  Object.keys(whos).forEach(function(w){var b=document.createElement('button');b.className='chip';b.textContent=w+'('+whos[w]+')';b.onclick=function(){FILTER=(FILTER===w)?'':w;render()};whoChips.appendChild(b)});
+  e4.body.appendChild(whoChips);
+  var ctl=row();
+  ctl.appendChild(pinB);
+  ctl.appendChild(btn('导出记忆(Markdown)','',function(){var lines=entries.slice().sort(function(a,b){return b.ts-a.ts}).map(function(e){return '- ['+new Date(e.ts).toLocaleDateString('zh-CN')+'] ★'+(e.importance||3)+(e.pinned?' 📌':'')+' '+(e.text||'')+'（'+(e.who||'通用')+'）'});var blob=new Blob(['# 她的记忆\n\n'+lines.join('\n')],{type:'text/markdown'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='her-memories-'+new Date().toISOString().slice(0,10)+'.md';a.click()}));
+  e4.body.appendChild(ctl);
+  var today=new Date();today.setHours(0,0,0,0);
+  e4.body.appendChild(mut('共 '+entries.length+' 条 · 置顶 '+entries.filter(function(e){return e.pinned}).length+' 条 · 今天新增 '+entries.filter(function(e){return e.ts>=today.getTime()}).length+' 条'));
+  var list=document.createElement('div');list.style.gridColumn='1/-1';e4.body.appendChild(list);
+  function render(){
+   list.innerHTML='';
+   var kw=q.value.trim();
+   var es=entries.filter(function(e){if(FILTER&&(((e.who==='self')?'她自己的话':(e.who||'通用'))!==FILTER))return false;if(ONLYPIN&&!e.pinned)return false;if(kw&&((String(e.text||'').indexOf(kw)<0)&&(((e.tags||[]).join('')).indexOf(kw)<0)))return false;return true});
+   es.sort(function(a,b){if(SORT==='imp')return (b.importance||3)-(a.importance||3)||(b.ts-a.ts);return (b.pinned?1:0)-(a.pinned?1:0)||b.ts-a.ts});
+   if(!es.length){list.appendChild(mut('没有匹配的记忆。'));return}
+   es.forEach(function(e2){
+    var b=bx();
+    var t2=document.createElement('div');t2.style.display='flex';t2.style.alignItems='center';t2.style.gap='6px';
+    var selI=document.createElement('select');selI.style.width='70px';[1,2,3,4,5].forEach(function(n){var op=document.createElement('option');op.value=n;op.textContent='★'+n;if((e2.importance||3)===n)op.selected=true;selI.appendChild(op)});selI.onchange=function(e3){api('POST','panel/memory',{op:'edit',id:e2.id,patch:{importance:Number(e3.target.value)}}).then(function(){go('memory')}).catch(function(x){alert(x.message)})};
+    t2.appendChild(selI);
+    t2.appendChild(document.createTextNode((e2.pinned?'📌 ':'')+(e2.text||'')));
+    if(e2.source){var sb=document.createElement('span');sb.className='mut';sb.textContent='['+e2.source+']';t2.appendChild(sb)}
+    b.appendChild(t2);
+    b.appendChild(mut(new Date(e2.ts).toLocaleString('zh-CN')+' · '+((e2.who==='self')?'她自己的话':(e2.who||'通用'))+' · '+(((e2.tags||[]).join('/'))||'无标签')));
+    var ei=document.createElement('input');ei.style.display='none';ei.value=e2.text;
+    b.appendChild(ei);
+    b.appendChild(row(
+     btn('编辑','',function(b3){if(ei.style.display==='none'){ei.style.display='flex';ei.focus();b3.textContent='保存'}else{api('POST','panel/memory',{op:'edit',id:e2.id,patch:{text:ei.value}}).then(function(){go('memory')}).catch(function(x){alert(x.message)})}}),
+     btn(e2.pinned?'取消钉住':'📌 钉住','',function(){api('POST','panel/memory',{op:'pin',id:e2.id}).then(function(){go('memory')})}),
+     btn('让她忘掉','dg',function(){api('POST','panel/memory',{op:'delete',id:e2.id}).then(function(){go('memory')})})
+    ));
+    list.appendChild(b);
+   });
+  }
+  q.oninput=render;
+  render();
+
+  /* ④ 提炼设置 */
+  var m=cfg.memory||{};
+  var e5=itemBlock('用哪个模型整理记忆','可独立于对话接口，省钱用');S2['mem-extract'].appendChild(e5.el);
+  var sel=document.createElement('select');[['cloud','云端便宜模型自动提炼（推荐）'],['manual','纯手动（不自动记，最省）']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];if((m.extraction||'cloud')===o[0])op.selected=true;sel.appendChild(op)});
+  e5.body.appendChild(f('提炼模式',sel));
+  var eb=inp(m.extractionBaseUrl||'',function(v){},'留空=跟对话接口同一家');
+  e5.body.appendChild(f('提炼专用 BaseURL',eb));
+  var ek=inp(m.extractionApiKey||'',function(v){},'留空=用对话接口的 Key','password');
+  e5.body.appendChild(f('提炼专用 Key',ek));
+  var em=inp(m.extractionModel||'',function(v){},'留空=用主对话模型');
+  e5.body.appendChild(f('提炼模型',em));
+  var tk=inp(m.topK||6,function(v){},'6','number');
+  e5.body.appendChild(f('每次想起几条',tk));
+  var en=inp(m.extractEveryN||1,function(v){},'1','number');
+  e5.body.appendChild(f('每几轮整理一次',en));
+  var echips=document.createElement('div');echips.className='chips';echips.style.gridColumn='1/-1';
+  e5.body.appendChild(echips);
+  e5.body.appendChild(btn('拉取模型列表','',function(b2){b2.disabled=true;api('POST','panel/models',{baseURL:eb.value||((cfg.chat||{}).baseURL),apiKey:ek.value||((cfg.chat||{}).apiKey)}).then(function(r){echips.innerHTML='';(r.models||[]).forEach(function(mm){var cc=document.createElement('button');cc.className='chip';cc.textContent=mm.id;cc.onclick=function(){em.value=mm.id};echips.appendChild(cc)});b2.textContent='✓';setTimeout(function(){b2.textContent='拉取模型列表'},2000)}).catch(function(e){alert(e.message)}).then(function(){b2.disabled=false})}));
+  e5.body.appendChild(row(
+   btn('保存记忆设置','pri',function(b2){b2.disabled=true;
+    var patch={memory:{extraction:sel.value,extractionBaseUrl:eb.value,extractionApiKey:ek.value,extractionModel:em.value,topK:Number(tk.value)||6,extractEveryN:Number(en.value)||1}};
+    api('POST','panel/config',patch).then(function(r2){
+     cfg=r2.config||cfg;
+     var back=((r2.config||{}).memory)||{};
+     // 把"后端真正存下来的值"写回输入框：看得见才算保存成功
+     sel.value=back.extraction||'cloud';
+     eb.value=back.extractionBaseUrl||'';ek.value=back.extractionApiKey||'';em.value=back.extractionModel||'';
+     tk.value=back.topK==null?6:back.topK;en.value=back.extractEveryN==null?1:back.extractEveryN;
+     var same=String(back.extractionModel||'')===String(em.value||'');
+     est.className='ok';
+     est.textContent='已保存 ✅ 后端现在存的是：提炼模型 "'+(back.extractionModel||'（空=用主对话模型）')+'"'
+      +(back.extractionBaseUrl?('　接口 '+back.extractionBaseUrl):'')+'　·　每次想起 '+(back.topK||6)+' 条、每 '+(back.extractEveryN||1)+' 轮整理一次（引擎已热重载）';
+    }).catch(function(e){est.className='er';est.textContent='保存失败：'+e.message;alert(e.message)}).then(function(){b2.disabled=false})}),
+   btn('测试这个模型','',function(b2){b2.disabled=true;est.className='mut';est.textContent='正在用「提炼专用」这套配置真跑一次…（约 3-15 秒）';
+    api('POST','panel/model-test',{role:'chat',deep:true,form:{baseURL:eb.value||((cfg.chat||{}).baseURL||''),apiKey:ek.value||((cfg.chat||{}).apiKey||''),model:em.value||((cfg.chat||{}).model||'')}}).then(function(r3){
+     est.className=r3.ok?'ok':'er';
+     est.textContent=(r3.ok?'提炼模型可用 ✅ ':'不能用 ⚠️ ')+(r3.detail||'')+'　·　'+r3.ms+'ms'+(r3.hint?('　建议：'+r3.hint):'');
+    }).catch(function(e){est.className='er';est.textContent='测试失败：'+e.message}).then(function(){b2.disabled=false})})
+  ));
+  var est=mut('');est.style.gridColumn='1/-1';e5.body.appendChild(est);
+  est.className='mut';
+  est.textContent='当前后端存着：提炼模型 "'+((m.extractionModel)||'（空=用主对话模型）')+'"'+(m.extractionBaseUrl?('　接口 '+m.extractionBaseUrl):'')+'。改完点「保存记忆设置」，这里会显示后端真正存下来的值。';
+  e5.body.appendChild(mut('全部留空=完全跟随对话接口。想省钱就单独填一家便宜 API + 一个便宜模型（如 Qwen2.5-7B）。「每次想起几条」越多越连贯也越费 token；「每几轮整理一次」设 2-3 能明显省 token。'));
+ }).catch(function(e){box.innerHTML='';box.appendChild(mut('加载失败: '+e.message))});
+}
+function tMoments(box){var c0=card('生成朋友圈草稿');box.appendChild(c0);
+ var th=document.createElement('input');th.placeholder='灵感方向（可选，留空她自己想）';c0.appendChild(f('灵感方向',th));
+ var st=document.createElement('span');st.className='mut';c0.appendChild(st);
+ c0.appendChild(btn('让她酝酿一条','pri',function(){st.textContent='她正在酝酿…';api('POST','panel/moments/generate',{theme:th.value}).then(function(r2){st.className='ok';st.textContent='草稿已生成 ✅';go('ops')}).catch(function(e){st.className='er';st.textContent='失败: '+e.message})}));
+ api('GET','panel/moments').then(function(r){var ds=r.drafts||[];if(!ds.length){box.appendChild(mut('还没有草稿。'));return}
+  var c1=card('草稿箱（'+ds.length+'）');box.appendChild(c1);
+  ds.forEach(function(d){var b=bx();b.innerHTML=(d.status==='posted'?'✅已发 · ':'📝 ')+esc(d.text||'')+'<br><span class=mut>'+new Date(d.createdAt).toLocaleString('zh-CN')+' · 配图 '+((d.images||[]).length)+' 张'+((d.images||[])[0]?(' · '+esc(d.images[0])):'')+'</span>';
+   var acts=row(btn('复制文案','',function(){navigator.clipboard.writeText(d.text||'').then(function(){alert('已复制 ✅')})}));
+   if(d.status!=='posted')acts.appendChild(btn('标记已发','',function(){api('POST','panel/moments/posted',{id:d.id}).then(function(){go('ops')})}));
+   acts.appendChild(btn('删除','dg',function(){api('POST','panel/moments/delete',{id:d.id}).then(function(){go('ops')})}));
+   b.appendChild(acts);c1.appendChild(b)});
+  c1.appendChild(mut('v1半自动：复制文案+取图（~/.dsh/wechat-companion/moments/），用她手机的微信亲手发出——零封号风险。'))}).catch(function(e){box.appendChild(mut('加载失败: '+e.message))});
+}
+/* ── 女娲（对话式捏人 · 分区折叠） ── */
+function tWorkshop(box){
+ box.innerHTML='';
+ var SECS=[
+  {id:'nw-how',icon:'🧭',title:'怎么用',desc:'三步捏出一个她'},
+  {id:'nw-api',icon:'🎭',title:'女娲的 API',desc:'选填，留空跟对话接口'},
+  {id:'nw-avatar',icon:'🖼️',title:'形象工坊',desc:'她的样子：定稿图 · 外貌档案 · 生活照'},
+  {id:'nw-chat',icon:'💬',title:'和女娲聊',desc:'她主动挖你的需求'},
+  {id:'nw-draft',icon:'📝',title:'实时草稿',desc:'聊到哪捏到哪，随时可应用'}
+ ];
+ var wrap=document.createElement('div');wrap.className='pageWrap';box.appendChild(wrap);
+ wrap.appendChild(tocFor(SECS));
+ var body=document.createElement('div');body.className='pageBody';wrap.appendChild(body);
+ var st=mut('女娲负责把你的想法捏成"她"：人设、外貌、内心、生活节奏、社交圈、秘密、长线目标，捏完一键应用。');body.appendChild(st);
+ var S={};SECS.forEach(function(x){var sb=secBlock(x.id,x.icon,x.title,x.desc);S[x.id]=sb.body;body.appendChild(sb.el)});
+
+ /* ① 怎么用 */
+ var g1=itemBlock('三步走','');g1.el.open=true;S['nw-how'].appendChild(g1.el);
+ var g0=itemBlock('女娲现在负责什么（2026-09-12 起）','造人 · 过去访谈 · 体检校准');g0.el.open=true;S['nw-how'].appendChild(g0.el);
+ g0.body.appendChild(mut('① **从零把人捏出来**：背景、性格（MBTI→六维）、说话习惯、喜好雷点、行为建议。'));
+ g0.body.appendChild(mut('② **过去访谈**：她的过去要有来历、但不会一次说完。女娲会像访谈一样问（老家/父母/读书/换过的工作/受过什么伤/最想要什么），然后**分成三层**填进去：表层（随时可聊）、中层（熟人~朋友被问到才说）、深层（亲近以上+气氛对了才说）。这三层在「世界 → 她的过去」里能看到和手改。'));
+ g0.body.appendChild(mut('③ **体检校准**：读她现在的人设 + 最近记忆 + 日记，指出"她哪里不像人设 / 哪里自相矛盾"，并给出能直接抄进人设的改法。'));
+ g0.body.appendChild(mut('不再归女娲管的：**关系定位与称呼分寸**（世界引擎每晚综合判断）、**兴趣与口头禅的演化**（世界引擎周结算）、**外貌**（形象工坊按定稿图自动生成，女娲只在还没有照片时才代笔）。'));
+ var auditBox=document.createElement('div');auditBox.style.gridColumn='1/-1';g0.body.appendChild(auditBox);
+ var ast=mut('');ast.style.gridColumn='1/-1';g0.body.appendChild(ast);
+ g0.body.appendChild(btn('体检校准（读她的人设+记忆+日记）','',function(b2){
+  b2.disabled=true;ast.className='mut';ast.textContent='正在体检…（要看她的记忆与日记，约 5~20 秒）';auditBox.innerHTML='';
+  api('POST','panel/workshop/audit',{}).then(function(r){
+   if(!r.ok){ast.className='er';ast.textContent='体检失败：'+(r.error||'未知');return}
+   var fs2=r.findings||[];
+   ast.className=fs2.length?'ok':'mut';
+   ast.textContent=r.summary||(fs2.length?'体检完成':'体检完成：没发现明显问题');
+   if(!fs2.length)auditBox.appendChild(mut('她和人设对得上，没有明显矛盾 ✅'));
+   fs2.forEach(function(x,i){
+    var c2=bx();c2.innerHTML='<b>'+(i+1)+'. '+esc(x.what||'')+'</b>';
+    if(x.why)c2.appendChild(mut('为什么：'+x.why));
+    if(x.fix)c2.appendChild(mut('建议：'+x.fix));
+    auditBox.appendChild(c2);
+   });
+  }).catch(function(e){ast.className='er';ast.textContent='体检失败：'+e.message}).then(function(){b2.disabled=false});
+ }));
+ g1.body.appendChild(mut('① 在「和女娲聊」里，把你知道的关于"她"的一切说给女娲听——背景/性格/MBTI 测试结果/聊天记录，想到什么说什么，乱都没关系。'));
+ g1.body.appendChild(mut('② 女娲会不停追问细节，你答她就捏——「实时草稿」会跟着长（右下方能看到她当前捏成什么样）。'));
+ g1.body.appendChild(mut('③ 捏到满意，点草稿底部的应用按钮：人设、外貌、内心、测评、兴趣、口头禅一次性填进去；记忆种子会进 mem0。应用前会自动快照，随时能切回。'));
+
+  /* ①b 形象工坊：定稿图 / 外貌档案 / 拍生活照 */
+  (function(){
+   var A=S['nw-avatar'];
+   var a1=itemBlock('形象定稿图','多角度最利于保持长相一致');a1.el.open=true;A.appendChild(a1.el);
+   var refBox=document.createElement('div');refBox.style.cssText='grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px';
+   var aHint=mut('加载中…');aHint.style.gridColumn='1/-1';
+   var fileIn=document.createElement('input');fileIn.type='file';fileIn.accept='image/*';fileIn.multiple=true;
+   var angleSel=document.createElement('select');
+   ['正面','左侧脸','右侧脸','45度','全身','半身','表情','其他'].forEach(function(x){var op=document.createElement('option');op.value=x;op.textContent=x;angleSel.appendChild(op)});
+   var upBtn=btn('上传到形象档案','pri',function(b2){
+    var files=Array.prototype.slice.call(fileIn.files||[]);
+    if(!files.length){alert('先选图片文件（可多选）');return}
+    b2.disabled=true;aHint.className='mut';aHint.textContent='正在导入 '+files.length+' 张…';
+    var done=0;
+    var next=function(i){
+     if(i>=files.length){aHint.className='ok';aHint.textContent='已导入 '+done+' 张 ✅';b2.disabled=false;loadAv();return}
+     var fr=new FileReader();
+     fr.onload=function(){
+      var data=String(fr.result||'');var comma=data.indexOf(',');
+      var b64=data.slice(comma+1);var mime=(data.slice(5,comma).split(';')[0])||'image/png';
+      api('POST','panel/avatar/upload',{dataBase64:b64,mime:mime,angle:angleSel.value,name:files[i].name}).then(function(){done++;next(i+1)}).catch(function(e){alert('第 '+(i+1)+' 张失败：'+e.message);next(i+1)});
+     };
+     fr.onerror=function(){alert('读不到这个文件');next(i+1)};
+     fr.readAsDataURL(files[i]);
+    };
+    next(0);
+   });
+   a1.body.appendChild(f('角度标注',angleSel));
+   a1.body.appendChild(row(fileIn,upBtn));
+   a1.body.appendChild(refBox);
+   a1.body.appendChild(aHint);
+   a1.body.appendChild(mut('建议 3~8 张：正面 / 左侧脸 / 右侧脸 / 45度 / 全身（同一个人的同一画风）。这些图会：①进她的提示词（她知道自己长什么样）②图生图时当底图——有底图，生成的"生活照"才保证是同一个人。'));
+   function loadAv(){
+    api('GET','panel/avatar').then(function(r){
+     var refs=r.refs||[];refBox.innerHTML='';
+     if(!refs.length){aHint.className='mut';aHint.textContent=(r.hint||'还没导入形象图');}
+     else{aHint.className='mut';aHint.textContent='已导入 '+refs.length+' 张；标了「主图」的那张是生图底图';}
+     refs.forEach(function(x){
+      var avCard=document.createElement('div');avCard.style.cssText='width:150px;border:1px solid #e6e9ec;border-radius:10px;overflow:hidden;background:#fff';
+      var img=document.createElement('img');img.src='/wechat-companion/'+x.url;img.style.cssText='width:100%;height:150px;object-fit:cover;display:block';
+      var cap=document.createElement('div');cap.className='mut';cap.style.cssText='padding:5px 7px;font-size:12px';
+      cap.textContent=(x.id===r.mainId?'⭐主图 · ':'')+(x.angle||'其他')+' · '+Math.round((x.bytes||0)/1024)+'KB';
+      var acts=row(btn('设为主图','',function(){api('POST','panel/avatar/setmain',{id:x.id}).then(loadAv)}),btn('删除','dg',function(){if(window.confirm('删除这张定稿图？'))api('POST','panel/avatar/delete',{id:x.id}).then(loadAv)}));
+      acts.style.padding='0 7px 7px';
+      avCard.appendChild(img);avCard.appendChild(cap);avCard.appendChild(acts);
+      refBox.appendChild(avCard);
+     });
+    }).catch(function(e){aHint.className='er';aHint.textContent='读取失败：'+e.message});
+   }
+   var a2=itemBlock('外貌档案（一段描述）','传了定稿图就自动生成；也能手改');A.appendChild(a2.el);
+   api('GET','panel/avatar').then(function(r){
+    var ta=document.createElement('textarea');ta.rows=5;ta.value=r.appearanceText||'';
+    ta.placeholder='例：黑色长发齐刘海，皮肤白，眼睛细长，安静的气质；常穿黑色系或卫衣牛仔裤，身高 160 左右偏瘦。';
+    a2.body.appendChild(ta);
+    var a2st=mut('');a2st.style.gridColumn='1/-1';a2.body.appendChild(a2st);
+    function drawFrom(){
+     var fromRec=r.appearanceFrom;
+     if(!fromRec){a2st.className='mut';a2st.textContent='还没有来源记录：你可以手写一段，或上传定稿图后点「按定稿图重新生成」。';return}
+     a2st.className='mut';
+     a2st.textContent=(fromRec.by==='nwa'?'由女娲写的':('按定稿图自动生成（'+(fromRec.angle||'')+'，'+(fromRec.at?new Date(fromRec.at).toLocaleString('zh-CN'):'')+'）'))
+      +'　·　你手改并保存后会以你写的为准';
+    }
+    drawFrom();
+    a2.body.appendChild(row(
+     btn('保存这段描述','pri',function(b2){b2.disabled=true;api('POST','panel/avatar/appearance',{text:ta.value}).then(function(r2){a2st.className='ok';a2st.textContent='已保存 ✅ 她（和生图）会用这段认人';ta.value=r2.text||ta.value}).catch(function(e){a2st.className='er';a2st.textContent='失败：'+e.message}).then(function(){b2.disabled=false})}),
+     btn('按定稿图重新生成','',function(b2){b2.disabled=true;a2st.className='mut';a2st.textContent='正在看定稿图…（要调一次识图模型，约 5~20 秒）';
+      api('POST','panel/avatar/describe',{}).then(function(r2){ta.value=r2.text||'';a2st.className='ok';a2st.textContent='已按定稿图重新生成 ✅（旧的那版留了底，可以恢复）';r.appearanceFrom=r2.from}).catch(function(e){a2st.className='er';a2st.textContent='失败：'+e.message}).then(function(){b2.disabled=false})}),
+     btn('恢复上一版','',function(b2){b2.disabled=true;api('POST','panel/avatar/appearance',{restore:true}).then(function(r2){ta.value=r2.text||'';a2st.className='ok';a2st.textContent='已恢复上一版'}).catch(function(e){a2st.className='er';a2st.textContent='失败：'+e.message}).then(function(){b2.disabled=false})})
+    ));
+    a2.body.appendChild(mut('这段描述会用在她聊天的人设里，也是"文生图"时认人的依据（图生图靠定稿图当底图）。'
+     +'上传新的定稿图她会自动重新生成一版；写得太傻就直接改，改完点保存，以后以你写的为准。'
+     +(r.hasPrev?'（现在存着一版旧的，随时能恢复）':'')));
+   }).catch(function(){});
+   var a3=itemBlock('拍生活照（AI 生图）','图生图最像她；文生图不用底图');A.appendChild(a3.el);
+   var sceneInp=inp('',function(v){},'在咖啡店窗边，端着拿铁，午后阳光');
+   a3.body.appendChild(f('场景描述',sceneInp,'lg'));
+   var modeSel=document.createElement('select');
+   [['i2i','图生图（用定稿图当底图，最像她；推荐）'],['t2i','文生图（不用底图，长相会飘）']].forEach(function(o){var op=document.createElement('option');op.value=o[0];op.textContent=o[1];modeSel.appendChild(op)});
+   a3.body.appendChild(f('生成方式',modeSel));
+   var genOut=mut('');genOut.style.gridColumn='1/-1';
+   var genImg=document.createElement('img');genImg.style.cssText='grid-column:1/-1;max-width:320px;border-radius:10px;display:none';
+   a3.body.appendChild(btn('生成一张','pri',function(b2){
+    b2.disabled=true;genOut.className='mut';genOut.textContent='正在生成…（一般 10~40 秒）';
+    api('POST','panel/album/generate',{scene:sceneInp.value,mode:modeSel.value}).then(function(r){
+     genOut.className='ok';genOut.textContent='生成成功 ✅ '+Math.round((r.item.bytes||0)/1024)+'KB · '+r.item.ms+'ms · 已进相册（「她」页 → 相册）';
+     genImg.src='/wechat-companion/'+r.item.url;genImg.style.display='block';
+    }).catch(function(e){genOut.className='er';genOut.textContent='失败：'+e.message}).then(function(){b2.disabled=false});
+   }));
+   a3.body.appendChild(genOut);a3.body.appendChild(genImg);
+   a3.body.appendChild(mut('前提：「大脑 → ② 生图接口」填好模型名并「测连通」通过。生成的照片都进「她 → 相册」，可以一键发到微信（发图能力已实测可用 ✅）。'));
+   loadAv();
+  })();
+
+ /* ② 女娲的 API */
+ var g2=itemBlock('女娲的 API','选填：想让她用更会写人设的模型就单独配');S['nw-api'].appendChild(g2.el);
+ var cfgW=null;var W0={};
+ var wb=inp('',function(v){},'留空=用对话接口');var wk=inp('',function(v){},'','password');var wm=inp('',function(v){},'留空=用对话模型');
+ var wchips=document.createElement('div');wchips.className='chips';wchips.style.gridColumn='1/-1';
+ api('GET','panel/config').then(function(r2){cfgW=r2.config||{};W0=cfgW.workshop||{};wb.value=W0.baseURL||'';wk.value=W0.apiKey||'';wm.value=W0.model||''}).catch(function(){});
+ g2.body.appendChild(f('BaseURL',wb));
+ g2.body.appendChild(f('API Key',wk));
+ g2.body.appendChild(f('模型',wm));
+ g2.body.appendChild(btn('拉取列表','',function(b2){b2.disabled=true;api('POST','panel/models',{baseURL:wb.value||((cfgW||{}).chat||{}).baseURL,apiKey:wk.value||((cfgW||{}).chat||{}).apiKey}).then(function(rr){wchips.innerHTML='';(rr.models||[]).forEach(function(mm){var cc=document.createElement('button');cc.className='chip';cc.textContent=mm.id;cc.onclick=function(){wm.value=mm.id};wchips.appendChild(cc)});b2.textContent='✓';setTimeout(function(){b2.textContent='拉取列表'},2000)}).catch(function(e){alert(e.message)}).then(function(){b2.disabled=false})}));
+ g2.body.appendChild(wchips);
+ g2.body.appendChild(btn('保存女娲API','pri',function(){api('POST','panel/config',{workshop:{baseURL:wb.value,apiKey:wk.value,model:wm.value}}).then(function(){st.className='ok';st.textContent='女娲 API 已保存 ✅（这条专线失败会自动回落对话接口）'}).catch(function(e){alert(e.message)})}));
+ g2.body.appendChild(mut('想给女娲配个更会写人设的模型（如 DeepSeek-V4 全血版）就单独填；不填就跟着对话接口走。'));
+
+ /* ③ 和女娲聊 */
+ var g3=itemBlock('对话区','');g3.el.open=true;S['nw-chat'].appendChild(g3.el);
+ var SID=localStorage.getItem('ws-sid')||'';var DRAFT=null;
+ var barRow=row();var sess=document.createElement('select');sess.style.maxWidth='340px';barRow.appendChild(f('会话',sess));
+ barRow.appendChild(btn('＋新对话','pri',function(){api('POST','panel/workshop/sessions/new',{}).then(function(r2){SID=r2.session.id;localStorage.setItem('ws-sid',SID);loadSession(SID);loadSessions(false)}).catch(function(e){alert(e.message)})}));
+ barRow.appendChild(btn('删除当前','dg',function(){if(!SID)return;if(!window.confirm('确定删除这个会话？聊天记录和草稿都会消失。'))return;api('POST','panel/workshop/sessions/delete',{id:SID}).then(function(){SID='';localStorage.removeItem('ws-sid');MSG.innerHTML='';DRAFT=null;drawDraft();loadSessions(true)}).catch(function(e){alert(e.message)})}));
+ g3.body.appendChild(barRow);
+ var MSG=document.createElement('div');
+ MSG.style.cssText='grid-column:1/-1;border:1px solid #e6e9ec;border-radius:10px;background:#fafbfc;min-height:240px;max-height:460px;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px';
+ g3.body.appendChild(MSG);
+ var inrow=row();var tin=document.createElement('input');tin.placeholder='对女娲说点什么…（回车发送；也可以直接传图）';tin.style.flex='1';
+ var imgIn=document.createElement('input');imgIn.type='file';imgIn.accept='image/*';imgIn.multiple=true;
+ var imgPrev=mut('');imgPrev.style.gridColumn='1/-1';
+ var pendingImgs=[];
+ imgIn.onchange=function(){
+  pendingImgs=[];
+  var files=Array.prototype.slice.call(imgIn.files||[]).slice(0,4);
+  if(!files.length){imgPrev.textContent='';return}
+  var left=files.length;
+  files.forEach(function(f,i){
+   var fr=new FileReader();
+   fr.onload=function(){var data=String(fr.result||'');pendingImgs[i]={data:data,mime:(data.slice(5,data.indexOf(';'))||'image/png')};if(--left===0){imgPrev.className='ok';imgPrev.textContent='已选 '+files.length+' 张图，发送时会一起给女娲看（她会照着写外貌/人设）'}};
+   fr.onerror=function(){if(--left===0){imgPrev.className='er';imgPrev.textContent='有一张读不出来'}};
+   fr.readAsDataURL(f);
+  });
+ };
+ g3.body.appendChild(row(imgIn,mut('女娲要能"看见"：选图后按发送即可（需要她的模型支持看图，否则会报错——那就把「识图」槽位配好，用「形象工坊」里的按钮生成外貌）')));
+ g3.body.appendChild(imgPrev);
+ tin.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();send()}};inrow.appendChild(tin);
+ var sendB=btn('发送','pri',function(){send()});inrow.appendChild(sendB);g3.body.appendChild(inrow);
+
+ /* ④ 实时草稿 */
+ var g4=itemBlock('女娲当前捏的草稿','');g4.el.open=true;S['nw-draft'].appendChild(g4.el);
+ var dc=document.createElement('div');dc.style.gridColumn='1/-1';g4.body.appendChild(dc);
+
+ function bubble(who,t){var b=bx();b.innerHTML='<b>'+esc(who)+'</b>　'+esc(t);MSG.appendChild(b);MSG.scrollTop=MSG.scrollHeight}
+ function drawDraft(){dc.innerHTML='';
+  if(!DRAFT||!Object.keys(DRAFT).length){dc.appendChild(mut('女娲还没开始捏——先在上方跟她聊几句，这里会实时长出人设草稿。'));return}
+  dc.appendChild(mut('名字: '+(DRAFT.name||'—')+' · 生日: '+(DRAFT.birthday||'—')+' · 城市: '+(DRAFT.city||'—')+' · 职业: '+(DRAFT.job||'—')+' · 年龄: '+(DRAFT.age||'—')));
+  if(DRAFT.personaText)dc.appendChild(mut('背景: '+String(DRAFT.personaText).slice(0,200)));
+  var A=DRAFT.assessments||{};
+  var al='测评: '+(A.mbti||'')+(A.functions?('（'+A.functions+'）'):'');
+  if(al!=='测评: ')dc.appendChild(mut(al));
+  var APT=DRAFT.appearanceText||'';
+  if(APT)dc.appendChild(mut('外貌: '+String(APT).slice(0,200)));
+  dc.appendChild(mut('兴趣: '+((DRAFT.interests||[]).join('、')||'—')+' · 口头禅: '+(((DRAFT.quirks||{}).catchphrases||[]).join('、')||'—')+' · 红线: '+((DRAFT.redLines||[]).join('、')||'—')));
+  var IN=DRAFT.inner||{};
+  if(Object.keys(IN).length)dc.appendChild(mut('内心: '+[['desire',IN.desire],['fear',IN.fear],['values',IN.values],['quirk',IN.quirk]].filter(function(x){return x[1]}).map(function(x){return x[0]+':'+x[1]}).join(' · ')));
+  dc.appendChild(mut('记忆种子 '+(DRAFT.memorySeeds||[]).length+' 条 · 风格样例 '+(DRAFT.styleExamples||[]).length+' 条'));
+  var B=DRAFT.behavior||{};var BB=B.behavior||{};var BL=B.life||{};
+  if(BB.replySpeed||BL.pokesPerDay!=null)dc.appendChild(mut('行为建议: 回复速度 '+(BB.replySpeed||'—')+' · 拆条 '+(BB.chunkMax||'—')+' · 每日主动 '+(BL.pokesPerDay==null?'—':BL.pokesPerDay)+' 次'+(BL.wake?(' · 作息 '+BL.wake+'~'+(BL.sleep||'')):'')));
+  var acts=row(btn('① 应用到人设（含测评/外貌/内心）+ 导入记忆','pri',function(){api('POST','panel/workshop/apply',{draft:DRAFT}).then(function(r2){st.className='ok';st.textContent='已应用 ✅（'+r2.seeds+' 条记忆种子进 mem0；应用前已自动快照，可回滚）'}).catch(function(e){st.className='er';st.textContent='失败: '+e.message})}));
+  if(BB.replySpeed||BL.pokesPerDay!=null)acts.appendChild(btn('② 行为建议写进人设','',function(){api('POST','panel/persona',{behavior:{replySpeed:BB.replySpeed,baseWake:BL.wake,baseSleep:BL.sleep,activePerDay:BL.pokesPerDay}}).then(function(){st.className='ok';st.textContent='行为建议已写进人设 ✅'}).catch(function(e){st.className='er';st.textContent='失败: '+e.message})}));
+  dc.appendChild(acts);
+  dc.appendChild(mut('随时继续和女娲聊着改；应用后可以在「她→存档」里切回旧版本。'));
+ }
+ function send(){var t=tin.value.trim();if(!t&&!pendingImgs.length)return;tin.value='';bubble('你',t+(pendingImgs.length?('（'+pendingImgs.length+' 张图）'):''));st.className='mut';st.textContent='女娲捏人中…（约10-30秒）';sendB.disabled=true;
+  api('POST','panel/workshop/chat',{sessionId:SID,message:t,images:pendingImgs}).then(function(r){pendingImgs=[];imgPrev.textContent='';imgIn.value='';SID=r.sessionId;localStorage.setItem('ws-sid',SID);DRAFT=r.draft||DRAFT;bubble('女娲',r.reply||'…');drawDraft();st.textContent='';loadSessions()}).catch(function(e){st.className='er';st.textContent=e.message}).then(function(){sendB.disabled=false})}
+ function loadSessions(auto){api('GET','panel/workshop/sessions').then(function(r){
+  var list=r.sessions||[];sess.innerHTML='';
+  list.forEach(function(s2){var op=document.createElement('option');op.value=s2.id;op.textContent=(s2.title||'新造人')+' · '+new Date(s2.updatedAt).toLocaleString('zh-CN');if(s2.id===SID)op.selected=true;sess.appendChild(op)});
+  sess.onchange=function(){loadSession(sess.value)};
+  if(!auto)return;
+  if(SID&&list.some(function(s2){return s2.id===SID})){loadSession(SID)}
+  else if(list.length){loadSession(list[0].id)}
+  else{api('POST','panel/workshop/sessions/new',{}).then(function(r2){SID=r2.session.id;localStorage.setItem('ws-sid',SID);loadSession(SID);loadSessions(false)}).catch(function(e){st.textContent=e.message})}
+ }).catch(function(e){st.textContent=e.message})}
+ function loadSession(id){SID=id;localStorage.setItem('ws-sid',id);api('GET','panel/workshop/session?id='+encodeURIComponent(id)).then(function(r){MSG.innerHTML='';var ss=r.session||{};(ss.messages||[]).forEach(function(m2){bubble(m2.role==='user'?'你':'女娲',m2.text)});DRAFT=ss.draft||null;drawDraft()}).catch(function(e){st.textContent=e.message})}
+ loadSessions(true);
+}
+function h3t(t){var d=document.createElement('div');d.style.fontWeight='600';d.textContent=t;return d}
+/* ── 试聊（写进给定容器；不真的发到微信） ── */
+function tTest(box){
+ var c=card('回复预览（真实模型，不发送）');box.appendChild(c);
+ var t=document.createElement('input');t.value='在干嘛呢';c.appendChild(f('对她说',t));
+ var rec=document.createElement('input');rec.type='checkbox';rec.checked=true;
+ var out2=document.createElement('div');out2.style.gridColumn='1/-1';
+ var goBtn=btn('让她回','pri',function(b2){b2.disabled=true;b2.textContent='她想…';out2.innerHTML='';
+  api('POST','panel/soul-test',{text:t.value,record:rec.checked,peerKey:'room'}).then(function(r){
+   (r.chunks||[]).forEach(function(ch){var b=bx();b.innerHTML='<b>她：</b>'+esc(ch);out2.appendChild(b)});
+   var bb=bx();bb.className='mut';bb.textContent='大脑: '+(r.backend||'')+' · 心情 '+Math.round(r.mood||0)+' · '+((r.delaysMs||[]).join('/'))+'ms';out2.appendChild(bb);
+  }).catch(function(e){out2.appendChild(mut('失败: '+e.message))}).then(function(){b2.disabled=false;b2.textContent='让她回'})});
+ c.appendChild(row(rec,document.createTextNode('计入记忆与亲密度'),goBtn));
+ c.appendChild(out2);
+ c.appendChild(mut('勾选"计入记忆与亲密度"时，这场试聊会进她的记忆（归属 room），跟真聊天一样影响心情与亲密度。'));
+}
+
+/* ── 功能状态（她会什么/还不会什么，诚实清单） ── */
+function tFeatures(box){
+ api('GET','panel/features').then(function(r){
+  var top=card('功能状态一览 · 这份清单她本人也「看得到」——聊天里被问到时她会照实自然回答');box.appendChild(top);
+  var eng=mut('加载引擎状态…');top.appendChild(eng);
+  Promise.all([api('GET','panel/mem-engine'),api('GET','panel/wxauto/status')]).then(function(rs){
+   eng.textContent='记忆引擎: '+(rs[0].running?((rs[0].info&&rs[0].info.ready===false)?'⚠️ 缺配置（保存模型后自动恢复）':'✅ mem0'):'⚠️ 未运行（本地兜底）')+' · 通道: '+(((rs[1].mode==='wxauto')&&rs[1].enabled)?'wxauto（PC接管）':'ClawBot（官方机器人）')+' · wxauto桥: '+(rs[1].bridge&&rs[1].bridge.ready?'✅':'未启动（默认关，正常）');
+  }).catch(function(){});
+  var BADGE={done:'✅ 可用',partial:'🟡 部分可用',building:'🔨 本批在建',planned:'📌 已规划',shelved:'⏸️ 搁置'};
+  var CLS={done:'ok',partial:'er',building:'ok',planned:'mut',shelved:'mut'};
+  (r.groups||[]).forEach(function(g){
+   var c=card(g.name);box.appendChild(c);
+   (g.items||[]).forEach(function(f2){
+    var b=bx();
+    var nm=document.createElement('div');nm.innerHTML='<b>'+esc(f2.name)+'</b> <span class="'+(CLS[f2.status]||'mut')+'">'+(BADGE[f2.status]||f2.status)+'</span>';
+    b.appendChild(nm);
+    b.appendChild(mut(f2.detail||''));
+    if(f2.blocked)b.appendChild(mut('卡点: '+f2.blocked));
+    if(f2.plan)b.appendChild(mut('计划: '+f2.plan));
+    c.appendChild(b);
+   });
+  });
+ }).catch(function(e){box.innerHTML='';box.appendChild(mut('加载失败: '+e.message))});
+}
+
+/* ── 导航 ── */
+var TABS=[{id:'home',name:'首页',fn:tHome},{id:'persona',name:'她',fn:tPersona},{id:'world',name:'🌍 世界',fn:tWorld},{id:'relation',name:'你们',fn:tRelation},{id:'memory',name:'记忆',fn:tMemory},{id:'brain',name:'大脑',fn:tBrain},{id:'nwa',name:'女娲',fn:tWorkshop},{id:'ops',name:'机务',fn:tOps}];
+function go(id){CUR=id;localStorage.setItem('ctab',id);if(TIMER){clearInterval(TIMER);TIMER=null}
+ var main=$('main');main.innerHTML='';var hit=false;TABS.forEach(function(t){if(t.id===id){t.fn(main);hit=true}});if(!hit){CUR=TABS[0].id;localStorage.setItem('ctab',CUR);TABS[0].fn(main)}
+ var n=$('nav');n.innerHTML='';TABS.forEach(function(t){var b=document.createElement('button');b.textContent=t.name;if(t.id===CUR)b.className='on';b.onclick=function(){go(t.id)};n.appendChild(b)})}
+init=function(){drawStop();drawName();go(localStorage.getItem('ctab')||'home')};
+init();
+</script>
+</body></html>

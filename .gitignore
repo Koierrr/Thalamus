@@ -1,0 +1,38 @@
+# ── 依赖缓存（体积大、可用 pnpm install 自动重建）──
+node_modules/
+.pnpm-store/
+
+# ── 下载的安装包（284MB Windows 微信安装器，不入库）──
+downloads/
+
+# ── 大体积二进制包（GitHub 单文件上限 100MB，超了整次推送失败）──
+*.exe
+*.apk
+*.zip
+*.7z
+*.rar
+*.msi
+
+# ── 备份 / 临时文件 ──
+*.bak
+*.old
+*.tmp
+*~
+
+# ── 编辑器 / 操作系统 ──
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── 日志与运行时数据（含隐私，不入库）──
+*.log
+logs/
+data/
+state.json
+.dsh-vision-router/
+.mnemon/
+
+# ── 环境变量文件（可能含 API Key）──
+.env
+.env.*

@@ -1,0 +1,27 @@
+import { sanitizeNick, decideRename, buildRenamePrompt } from '../src/rename.js';
+let pass=0,fail=0; const ok=(c,n)=>{if(c){pass++;console.log('✅ '+n)}else{fail++;console.log('❌ '+n)}};
+ok(sanitizeNick('暖暖')==='暖暖','中文昵称通过');
+ok(sanitizeNick('  「小暖」 ')==='小暖','去掉引号空格');
+ok(sanitizeNick('abcdefghij')==='','超长英文被拒');
+ok(sanitizeNick('亲爱的！')==='','带标点被拒');
+ok(sanitizeNick('')==='','空被拒');
+const persona={name:'小暖',personaText:'插画师',traits:{warmth:80},relationship:{}};
+ok(buildRenamePrompt(persona,'朋友','亲近').length===2,'提示词两段');
+// 假 router：返回不同情形
+const mk=(t)=>({chat:async()=>({content:t})});
+let r=await decideRename({router:mk('{"changed":true,"name":"暖暖","reason":"想更亲一点"}'),persona,from:'朋友',to:'亲近'});
+ok(r.changed&&r.name==='暖暖','改变成功解析');
+r=await decideRename({router:mk('```json\n{"changed":true,"name":"阿暖","reason":"顺口"}\n```'),persona,from:'熟人',to:'朋友'});
+ok(r.changed&&r.name==='阿暖','带代码块也能解析');
+r=await decideRename({router:mk('{"changed":false,"name":"","reason":""}'),persona,from:'熟人',to:'朋友'});
+ok(r&&r.changed===false,'不改也能正常返回');
+r=await decideRename({router:mk('{"changed":true,"name":"小暖","reason":"x"}'),persona:Object.assign({},persona,{relationship:{ownerCallsMe:'小暖'}}),from:'a',to:'b'});
+ok(r&&r.changed===false,'跟现在一样→视为没改');
+r=await decideRename({router:mk('我不想改'),persona,from:'a',to:'b'});
+ok(r===null,'没有JSON→null');
+r=await decideRename({router:mk('{"changed":true,"name":"💖亲爱的","reason":"x"}'),persona,from:'a',to:'b'});
+ok(r&&r.changed===false,'非法名字→视为没改');
+r=await decideRename({router:{chat:async()=>{throw new Error('boom')}},persona,from:'a',to:'b'});
+ok(r===null,'调用失败→null 不崩');
+console.log(fail===0?'\nRENAME ALL GREEN ✅ '+pass+' 项':'\nRENAME 有失败 ❌ '+fail);
+process.exit(fail?1:0);

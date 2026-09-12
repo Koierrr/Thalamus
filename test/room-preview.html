@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>她的房间</title>
+<style>
+body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:#f2f3f5}
+header{padding:10px 14px;background:#ededed;font-size:14px;color:#555;text-align:center;position:sticky;top:0}
+#chat{padding:12px;display:flex;flex-direction:column;gap:8px;min-height:72vh}
+.b{max-width:78%;padding:8px 12px;border-radius:10px;font-size:15px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
+.her{background:#fff;align-self:flex-start}
+.me{background:#95ec69;align-self:flex-end}
+.err{color:#c00;align-self:center;font-size:12px}
+#f{display:flex;gap:8px;padding:10px;position:sticky;bottom:0;background:#f2f3f5}
+#t{flex:1;padding:10px;border:none;border-radius:8px;font-size:15px;outline:none}
+button{padding:10px 16px;border:none;background:#07c160;color:#fff;border-radius:8px;font-size:15px}
+</style></head><body>
+<header>她的房间 · <span id="hn">…</span></header>
+<div id="chat"></div>
+<form id="f"><input id="t" placeholder="跟她说点什么…" autocomplete="off"><button>发送</button></form>
+<script>
+var chat=document.getElementById("chat");
+function bubble(c,t){var d=document.createElement("div");d.className="b "+c;d.textContent=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}
+function j(m,p,b){return fetch("/wechat-companion/"+p,{method:m,headers:b?{"content-type":"application/json"}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()})}
+j("GET","panel/persona").then(function(p){document.getElementById("hn").textContent=(p.persona&&p.persona.name)||"她";});
+bubble("her","我在这儿呢 ~ 点下面跟我说话吧");
+document.getElementById("f").onsubmit=function(e){e.preventDefault();var inp=document.getElementById("t");var t=inp.value.trim();if(!t)return;bubble("me",t);inp.value="";
+ j("POST","panel/soul-test",{text:t,record:true,peerKey:"room"}).then(function(r){(r.chunks||[]).forEach(function(c){bubble("her",c)});if(r.error)bubble("err",r.error)}).catch(function(){bubble("err","网络异常，稍后再试")});};
+</script></body></html>
