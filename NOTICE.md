@@ -12,3 +12,6 @@
 原项目：https://github.com/NattoCB/dsh-plugin-wechat-bridge
 许可证全文见 LICENSE-NattoCB.md。后续版本的灵魂引擎、生活调度、朋友圈工坊、
 面板扩展为本项目原创代码。
+
+本项目整体以 MIT License 发布，版权归 Koierrr 所有，详见 LICENSE。
+上述第三方文件仍遵循其原作者的 MIT License，版权归 NattoCB 所有。
