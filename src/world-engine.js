@@ -17,6 +17,109 @@ function dayKey(now) {
   return y + '-' + m + '-' + d;
 }
 
+/**
+ * 把一晚的世界剧本渲染成一份人能读的 Markdown（2026-09-13）。
+ * 为什么不是直接 dump JSON：这是给用户翻旧账看的，用记事本就能打开、能看懂才算留档。
+ * 内容 = 那一晚的全部产出（日记/流水/念头/秘密/社交圈/长线/明天的分寸/画像），一条都不丢。
+ */
+function worldMarkdown(o) {
+  const L = [];
+  const arr = (x) => (Array.isArray(x) ? x : []);
+  // 注意：statusLine / insomnia / proactiveAt / rhythm 在世界引擎的产出里是挂在 tone 下面的
+  // （曾经在这里按顶层读 → 存档里"她的状态/今晚失眠/作息基准"三块是空的，且不报错）。
+  const T = (o && o.tone && typeof o.tone === 'object') ? o.tone : {};
+  L.push('# ' + (o.date || '') + ' 她的日记');
+  L.push('');
+  L.push('> 这是她写给自己看的，不是给你看的。世界引擎每晚替她写下这一天。');
+  L.push('');
+  L.push('## 📔 她的话（私人日记）');
+  L.push('');
+  L.push(String(o.diary || '（这一天没有日记）'));
+  L.push('');
+  L.push('## 🌤️ 那一天的她');
+  L.push('');
+  L.push('- 天气：' + (o.weather || '—') + (o.weatherSource === 'real' ? '（真实天气）' : o.weatherSource === 'story' ? '（剧本自己编的）' : ''));
+  L.push('- 情绪：' + (o.mood == null ? '—' : o.mood + ' / 100'));
+  L.push('- 痴迷的事：' + (o.focus || '—'));
+  L.push('- 作息：' + (o.wake || '?') + ' 起 · ' + (o.sleep || '?') + ' 睡');
+  L.push('- 工作负荷：' + (o.workload == null ? '—' : o.workload + ' / 100'));
+  if (o.milestone) L.push('- 🎉 纪念日：' + o.milestone);
+  const j = o.job || {};
+  if (j.type && j.type !== 'none') L.push('- 她怎么上班：' + j.type + (j.workStart ? '（' + j.workStart + '–' + j.workEnd + '）' : '') + (j.reason ? ' —— ' + j.reason : ''));
+  const statusLine = String(T.statusLine || o.statusLine || '');
+  if (statusLine) L.push('- 她今天的状态：' + statusLine);
+  if (T.insomnia === true || o.insomnia === true) L.push('- 今晚失眠到很晚');
+  L.push('');
+  if (arr(o.thoughts).length) {
+    L.push('## 💭 她的念头');
+    L.push('');
+    arr(o.thoughts).forEach((x) => L.push('- ' + x));
+    L.push('');
+  }
+  if (arr(o.secrets).length) {
+    L.push('## 🤫 她的秘密（还没告诉你的事）');
+    L.push('');
+    arr(o.secrets).forEach((x) => L.push('- ' + (x && x.text ? x.text : x)));
+    L.push('');
+  }
+  if (arr(o.flow).length) {
+    L.push('## 🕐 她的一天（生活流水）');
+    L.push('');
+    arr(o.flow).forEach((f) => L.push('- **' + (f.time || '') + '** ' + (f.text || '')));
+    L.push('');
+  }
+  if (arr(o.npcs).length) {
+    L.push('## 🧑‍🤝‍🧑 她身边的人');
+    L.push('');
+    arr(o.npcs).forEach((n) => L.push('- ' + (n.name || '') + (n.rel ? '（' + n.rel + '）' : '') + (n.note ? '：' + n.note : '')));
+    L.push('');
+  }
+  if (arr(o.longterm).length) {
+    L.push('## 🎯 她的长线小心思');
+    L.push('');
+    arr(o.longterm).forEach((x) => L.push('- ' + (x && x.text ? x.text : x)));
+    L.push('');
+  }
+  if (arr(o.disclosed).length) {
+    L.push('## 🗝️ 她已经告诉过你的过去（分层）');
+    L.push('');
+    arr(o.disclosed).forEach((d) => L.push('- [' + (d.layer || '') + '] ' + (d.topic || '')));
+    L.push('');
+  }
+  const t = o.tone || null;
+  if (t) {
+    L.push('## 🎭 第二天她对你的分寸');
+    L.push('');
+    L.push('- 该表现的熟度：' + (t.intimacy == null ? '—' : t.intimacy + ' / 100'));
+    L.push('- 怎么称呼你：' + (t.address || '—'));
+    L.push('- 语气：' + (t.style || '—'));
+    if (t.proactiveAt) L.push('- 大概什么时候会想找你：' + t.proactiveAt);
+    if (t.proactive) L.push('- 主动倾向：早安 ' + (t.proactive.morning ? '会' : '不') + ' · 晚安 ' + (t.proactive.night ? '会' : '不') + (t.proactive.pokes != null ? (' · 最多主动 ' + t.proactive.pokes + ' 次') : '') + (t.proactive.nudges != null ? (' · 催你 ' + t.proactive.nudges + ' 次') : ''));
+    if (arr(t.forbid).length) L.push('- 绝对不要做：' + arr(t.forbid).join('、'));
+    if (t.reason) L.push('- 为什么是这个分寸：' + t.reason);
+    L.push('');
+  }
+  const rhythm = T.rhythm || o.rhythm || null;
+  if (rhythm) {
+    L.push('## ⏰ 她的作息基准（世界引擎推的）');
+    L.push('');
+    L.push('- 平时：' + (rhythm.baseWake || '?') + ' 起 · ' + (rhythm.baseSleep || '?') + ' 睡');
+    L.push('- 周末最多推迟 ' + (rhythm.weekendShiftMin == null ? '—' : rhythm.weekendShiftMin + ' 分钟') + ' · 夜猫子概率 ' + (rhythm.nightOwlProb == null ? '—' : Math.round(rhythm.nightOwlProb * 100) + '%') + ' · 通宵概率 ' + (rhythm.allNighterProb == null ? '—' : Math.round(rhythm.allNighterProb * 100) + '%'));
+    L.push('');
+  }
+  if (o.portrait) {
+    L.push('## 🪞 她眼中的你（画像）');
+    L.push('');
+    L.push(String(o.portrait));
+    L.push('');
+  }
+  L.push('---');
+  L.push('');
+  L.push('生成时间：' + (o.generatedAt ? new Date(o.generatedAt).toLocaleString('zh-CN') : '—') + '　·　这份存档由插件自动写入，一天一个文件、永久保存、可直接用记事本打开。');
+  L.push('');
+  return L.join('\n');
+}
+
 const WMO = { 0: '晴', 1: '基本晴', 2: '多云', 3: '阴', 45: '雾', 48: '雾凇', 51: '毛毛雨', 53: '毛毛雨', 55: '毛毛雨', 61: '小雨', 63: '中雨', 65: '大雨', 66: '冻雨', 67: '冻雨', 71: '小雪', 73: '中雪', 75: '大雪', 77: '雪粒', 80: '阵雨', 81: '阵雨', 82: '强阵雨', 85: '阵雪', 86: '阵雪', 95: '雷阵雨', 96: '雷阵雨伴冰雹', 99: '雷阵雨伴冰雹' };
 
 export class WorldEngine {
@@ -36,6 +139,45 @@ export class WorldEngine {
   _read() { try { return JSON.parse(fs.readFileSync(this._file, 'utf8')); } catch { return {}; } }
   _write(s) { fs.mkdirSync(this.dir, { recursive: true }); const t = this._file + '.tmp-' + Date.now(); fs.writeFileSync(t, JSON.stringify(s, null, 2), 'utf8'); fs.renameSync(t, this._file); }
   state() { return this._read(); }
+
+  /* ---------- 世界剧本留档（2026-09-13 加，用户拍板：一天一个 Markdown、永久保存） ----------
+     为什么：world-state.json 只有"最近一晚"，她一写新的一晚，昨天的日记/流水/念头/秘密就全没了。
+     现在每晚生成完顺手写一份 diary/<日期>.md：记事本能直接打开、一天坏了不影响别的天、备份天然按天分。 */
+  _diaryDir() { return path.join(this.dir, 'diary'); }
+
+  /** 把一晚的世界剧本写成可读的 Markdown（用"那一天"的日期，也就是她日记里正在回顾的那天） */
+  _archive(out) {
+    if (!out || !/^\d{4}-\d{2}-\d{2}$/.test(String(out.date || ''))) return '';
+    try {
+      fs.mkdirSync(this._diaryDir(), { recursive: true });
+      const f = path.join(this._diaryDir(), out.date + '.md');
+      fs.writeFileSync(f, worldMarkdown(out), 'utf8');
+      return f;
+    } catch (e) {
+      this.log('[world] 日记留档失败（不影响当晚生成）: ' + (e && e.message));
+      return '';
+    }
+  }
+
+  /** 已留档的日期（新→旧），后台日历用；顺手把"当前 state 还没留档"的情况补上（老数据升级） */
+  diaryDays() {
+    try {
+      const s = this._read();
+      if (s && s.date && s.diary && !fs.existsSync(path.join(this._diaryDir(), s.date + '.md'))) this._archive(s);
+    } catch { /* 补档失败不影响列表 */ }
+    try {
+      return fs.readdirSync(this._diaryDir())
+        .filter((x) => /^\d{4}-\d{2}-\d{2}\.md$/.test(x))
+        .map((x) => x.slice(0, 10)).sort().reverse();
+    } catch { return []; }
+  }
+
+  /** 读某一天的存档原文（Markdown）；没有就返回空字符串 */
+  diaryOf(date) {
+    const d = String(date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return '';
+    try { return fs.readFileSync(path.join(this._diaryDir(), d + '.md'), 'utf8'); } catch { return ''; }
+  }
 
   /** 真实天气（Open-Meteo 免费无key，城市→坐标缓存）。失败返回 null（由剧本编一个）。 */
   async _weather(persona, idx) {
@@ -69,9 +211,17 @@ export class WorldEngine {
 
   /** 她睡了才转（today.sleep 之后，或凌晨4点前补转）；同一天只转一次 */
   /** 世界引擎必须有自己独立的API（BaseURL+模型）；不跟对话接口共用 */
+  /** 世界引擎的顺位链（三槽：主力 + 2 回落；仍然只用自己的槽位，绝不共用对话接口） */
+  _worldChain() {
+    const cfg = this.cfgGet() || {};
+    const ch = (cfg.chain || {}).world;
+    if (Array.isArray(ch) && ch.length) return ch.filter((c) => c && c.baseURL && c.model);
+    const w = cfg.world || {};
+    return (w.baseURL && w.model) ? [w] : [];
+  }
+
   _dedicatedReady() {
-    const w = (this.cfgGet() || {}).world || {};
-    return !!(w.baseURL && w.model);
+    return this._worldChain().length > 0;
   }
 
   /** 她睡了才转（today.sleep 之后，或凌晨4点前补转）；同一天只转一次；失败后30分钟内不重试 */
@@ -90,10 +240,18 @@ export class WorldEngine {
   /** 睡眠窗口调用：生成日记/明天作息/流水/念头/秘密/NPC/画像。必须有独立API，绝不共用对话接口。 */
   async generate({ persona, today, memories = [], now = new Date() } = {}) {
     if (!this._dedicatedReady()) throw new Error('世界引擎未配置独立API（在「她」页配置，不跟对话接口共用）');
-    const w = (this.cfgGet() || {}).world || {};
-    const chat = (msgs, opts) => {
+    const worldChain = this._worldChain();
+    const chat = async (msgs, opts) => {
       const fn = this.chatFn || chatCompletion;
-      return fn({ baseURL: w.baseURL, apiKey: w.apiKey || '', model: w.model, messages: msgs, temperature: 0.85, maxTokens: 1600, timeoutMs: 180000 });
+      const errs = [];
+      for (const c of worldChain) {
+        try {
+          const r = await fn({ baseURL: c.baseURL, apiKey: c.apiKey || '', model: c.model, messages: msgs, temperature: 0.85, maxTokens: 2600, timeoutMs: 180000 });
+          this.lastBackend = c.model;
+          return r;
+        } catch (err) { errs.push(c.model + ': ' + err.message); }
+      }
+      throw new Error('世界引擎 ' + worldChain.length + ' 个槽位都失败了 → ' + errs.join(' | '));
     };
     const A = persona.assessments || {};
     const T = persona.traits || {};
@@ -114,7 +272,7 @@ export class WorldEngine {
     const prevPortrait = prev.portrait || '';
 
     // 真实天气（凌晨生成 idx=0=今天；晚间生成 idx=1=明天）。开关关了或拿不到 → 由剧本编一个。
-    const weather = (w.weatherReal !== false) ? await this._weather(persona, isSmallHours ? 0 : 1) : null;
+    const weather = (((this.cfgGet() || {}).world || {}).weatherReal !== false) ? await this._weather(persona, isSmallHours ? 0 : 1) : null;
 
     // 虚拟社交圈：稳定编制（持久保存，按名字去重合并，不凭空换人；兼容旧版字符串格式）
     const normNpc = (x) => {
@@ -206,7 +364,11 @@ export class WorldEngine {
       (evolveDue ? ',"evolve":{"warmth":1,"attachment":1,"reason":"第一人称一句话说明为什么变（六维键：socialBattery/warmth/attachment/sharpness/initiative/orderliness，值-2~+2，可以只给部分键）"' : '') +
       (evolveDue ? ',"interestsAdd":"","interestDrop":"","phraseAdd":"","phraseDrop":"","interestsReason":""' : '') +
       ',"disclosedAdd":[{"layer":"表层|中层|深层","topic":"今晚她新告诉他的一个过去细节（如：老家在苏州）"}]0-2条，没有就空数组' +
-      ',"tone":{"intimacy":今天她该表现的熟度0-100,"address":"明天她该怎么称呼他（例如：用名字/叫哎/叫XX）","style":"明天的语气要点，一句话","chunks":明天她一条回复最多几条消息1-4（话少的人给1）,"maxChars":每条最多几个字8-80（话少的人给15左右）,"forbid":["明天绝对不要做的事，2-4条"],"reason":"一句理由（为什么是这个分寸）"}' +
+      ',"tone":{"intimacy":今天她该表现的熟度0-100,"address":"明天她该怎么称呼他（例如：用名字/叫哎/叫XX）","style":"明天的语气要点，一句话","proactive":{"morning":明天要不要主动说早安true/false,"night":要不要说晚安true/false,"pokes":明天最多主动几次0-5,"nudges":催他几次0-5},"chunks":明天她一条回复最多几条消息1-4（话少的人给1）,"maxChars":每条最多几个字8-80（话少的人给15左右）,"forbid":["明天绝对不要做的事，2-4条"],"reason":"一句理由（为什么是这个分寸）"}' +
+      ',"statusLine":"她今天状态的一句话（第一人称、口语，例如：今天案子卡住了，有点闷）"' +
+      ',"insomnia":今晚她是不是失眠到很晚true/false' +
+      ',"proactiveAt":"明天她大概什么时候会想找他（例如 16:00 前后 / 通勤路上 / 睡前；不想找就给空字符串）"' +
+      ',"rhythm":{"baseWake":"她平时的起床HH:MM","baseSleep":"她平时的睡觉HH:MM","weekendShiftMin":周末推迟分钟0-180,"nightOwlProb":夜猫子概率0-1,"allNighterProb":通宵概率0-1}' +
       ',"workload":今天的工作负荷0-100（不是工作日填0）' +
       (jobOn && persona.job ? ',"job":{"type":"office|shift|freelance|night|student|none","workStart":"HH:MM","workEnd":"HH:MM","workDays":"1,2,3,4,5","reason":"你判断她明天怎么上班的一句理由"}' : '') +
       '}',
@@ -223,7 +385,7 @@ export class WorldEngine {
     }
     let r;
     try {
-      r = await chat([{ role: 'system', content: sys.filter(Boolean).join('\n') }, { role: 'user', content: '（现在是她睡着的时间，开始为她的世界转起来。）' }], { temperature: 0.85, maxTokens: 1600 });
+      r = await chat([{ role: 'system', content: sys.filter(Boolean).join('\n') }, { role: 'user', content: '（现在是她睡着的时间，开始为她的世界转起来。）' }], { temperature: 0.85, maxTokens: 2600 });
       const m = String(r.content || '').match(/\{[\s\S]*\}/);
       if (!m) throw new Error('世界引擎输出不是JSON');
       try { r = { parsed: JSON.parse(m[0]) }; } catch (err) { throw new Error('世界引擎JSON解析失败: ' + err.message); }
@@ -292,6 +454,22 @@ export class WorldEngine {
           address: String(t.address || '').slice(0, 30),
           style: String(t.style || '').slice(0, 120),
           chunks: (typeof t.chunks === 'number' && isFinite(t.chunks)) ? Math.max(1, Math.min(4, Math.round(t.chunks))) : undefined,
+          proactive: (t.proactive && typeof t.proactive === 'object') ? {
+            morning: t.proactive.morning !== false,
+            night: t.proactive.night !== false,
+            pokes: Number.isFinite(Number(t.proactive.pokes)) ? Math.max(0, Math.min(5, Math.round(Number(t.proactive.pokes)))) : undefined,
+            nudges: Number.isFinite(Number(t.proactive.nudges)) ? Math.max(0, Math.min(5, Math.round(Number(t.proactive.nudges)))) : undefined,
+          } : undefined,
+          statusLine: String(d.statusLine || '').slice(0, 80),
+          insomnia: d.insomnia === true,
+          proactiveAt: String(d.proactiveAt || '').slice(0, 30),
+          rhythm: (d.rhythm && typeof d.rhythm === 'object') ? {
+            baseWake: /^\d{1,2}:\d{2}$/.test(String(d.rhythm.baseWake || '')) ? String(d.rhythm.baseWake) : undefined,
+            baseSleep: /^\d{1,2}:\d{2}$/.test(String(d.rhythm.baseSleep || '')) ? String(d.rhythm.baseSleep) : undefined,
+            weekendShiftMin: (() => { const v = Number(d.rhythm.weekendShiftMin); return isFinite(v) ? Math.max(0, Math.min(180, Math.round(v))) : 60; })(),
+            nightOwlProb: (() => { const v = Number(d.rhythm.nightOwlProb); return isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.15; })(),
+            allNighterProb: (() => { const v = Number(d.rhythm.allNighterProb); return isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.03; })(),
+          } : undefined,
           maxChars: (typeof t.maxChars === 'number' && isFinite(t.maxChars)) ? Math.max(8, Math.min(80, Math.round(t.maxChars))) : undefined,
           forbid: Array.isArray(t.forbid) ? t.forbid.map((x) => String(x).slice(0, 20)).filter(Boolean).slice(0, 5) : [],
           reason: String(t.reason || '').slice(0, 80),
@@ -373,6 +551,7 @@ export class WorldEngine {
     if (ann) out.milestone = ann.label;
 
     this._write(out);
+    this._archive(out); // 一天一份 Markdown 留档（翻旧账用；失败不影响当晚生成）
     // 生活流水入她的记忆（source: life），供日后自然聊起
     if (this.soul) {
       for (const f of out.flow) {

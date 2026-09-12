@@ -40,7 +40,7 @@ import { ERRCODE_SESSION_EXPIRED } from './weixin-types.js';
 import { downloadMediaFromItem, uploadMediaToCdn } from './weixin-media.js';
 import { birthdayInfo } from './birthday.js';
 import { parseInboundText } from './inbound.js';
-import { proactiveLimitOf, stageToneOf } from './soul.js';
+import { proactiveLimit, toneForToday } from './soul.js';
 import { inferJob, JOB_TYPES, guessJobType } from './job.js';
 import { formatTurnErrorReply, formatTurnNotification, shouldNotifySession, stripMarkup, findWorkspaceIdForSession, isWorkspaceMuted } from './notify.js';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
@@ -217,6 +217,7 @@ class WeixinBridgeService {
       memory: this.memClient,
       behavior: () => {
         const c = this._modelConfig();
+        // 第三次改版：「他是谁」退场（她从零认识你，认知全部来自记忆）
         return { ...(c.behavior || {}), memory: c.memory || {}, params: c.params || {} };
       },
       logger: (m) => this.ctx.logger?.info?.(m),
@@ -226,7 +227,7 @@ class WeixinBridgeService {
     this.workshop = new PersonaWorkshop({ soul: this.soul, router: () => this.router, config: () => this._modelConfig(), sessionFile: path.join(this.companionDir, 'workshop-sessions.json'), logger: (m) => this.ctx.logger?.info?.(m) });
     this.world = new WorldEngine({ dir: this.companionDir, router: () => this.router, config: () => this._modelConfig(), soul: this.soul, logger: (m) => this.ctx.logger?.info?.(m) });
     this.avatar = new AvatarWorkshop({ dir: this.companionDir, routerGet: () => this.router, soul: this.soul, cfgGet: () => this._modelConfig(), logger: (m) => this.ctx.logger?.info?.(m) });
-    this.deform = new Deform(this.companionDir, (m) => this.ctx.logger?.info?.(m), () => this._modelConfig());
+    this.deform = new Deform(this.companionDir, (m) => this.ctx.logger?.info?.(m), () => this._modelConfig(), () => (this.soul && this.soul.getPersona ? this.soul.getPersona().traits : null));
     this.soul.deform = this.deform;
     this._worldBusy = false;
     this._renameBusy = false;
@@ -687,18 +688,37 @@ class WeixinBridgeService {
 
   _replyToAll() { return this._modelConfig().replyToAll !== false; }
 
-  /** 向量解析：source=api 走云端接口，否则本地 Ollama */
-  async _embedTextFor(text) {
+  /**
+   * 向量配置解析（2026-09-13 第三次改版）。
+   * 以前这里是 `source === 'api'` 才算云端——source 是后台一个下拉，用户改了地址不改下拉，
+   * 或者改了下拉不改地址，就会"设置和实际行为对不上"。现在地址是唯一权威：
+   *   地址是 127.0.0.1 / localhost / 0.0.0.0 → 本地 Ollama
+   *   其它地址                              → 云端（OpenAI 兼容 /v1/embeddings）
+   */
+  _embedCfg() {
     const e = this._modelConfig().embed || {};
-    if (e.source === 'api' && e.baseURL && e.model) {
-      return embedText({ baseURL: e.baseURL, apiKey: e.apiKey, model: e.model, input: text });
+    const raw = String(e.url || e.baseURL || '').trim();
+    const local = !raw || /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(raw);
+    return {
+      local,
+      url: (raw || 'http://127.0.0.1:11434').replace(/\/+$/, ''),
+      apiKey: String(e.apiKey || ''),
+      model: String(e.model || e.embedModel || 'bge-m3'),
+      dim: Number(e.dim) > 0 ? Math.round(Number(e.dim)) : 0,
+      where: local ? '本地 Ollama' : '云端接口',
+    };
+  }
+
+  /** 向量解析：地址决定走本地 Ollama 还是云端（两个分支都真接线） */
+  async _embedTextFor(text) {
+    const e = this._embedCfg();
+    if (!e.local) {
+      return embedText({ baseURL: e.url, apiKey: e.apiKey, model: e.model, input: text });
     }
-    const url = String(e.url || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-    const model = e.model || e.embedModel || 'bge-m3';
-    const res = await fetch(url + '/api/embeddings', {
+    const res = await fetch(e.url + '/api/embeddings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, prompt: String(text).slice(0, 2000) }),
+      body: JSON.stringify({ model: e.model, prompt: String(text).slice(0, 2000) }),
       signal: AbortSignal.timeout(30000),
     });
     if (!res.ok) throw new Error('embed HTTP ' + res.status);
@@ -745,12 +765,15 @@ class WeixinBridgeService {
           .catch((e) => this.ctx.logger?.warn?.('[world] 生成失败(下轮再试): ' + e.message))
           .then(() => { this._worldBusy = false; });
       }
+      const toneNow = toneForToday(this.world.state(), today);
       const sent = await this.life.tick({
         soul: this._soulForLife(today),
         overrides: {
           wake: today.wake, sleep: today.sleep, pokesPerDay: today.activeToday,
           // 关系阶段给的主动上限（刚认识就不该天天来找你）+ 安静时段（她不该打扰你的时间）
-          stageLimit: proactiveLimitOf(this._ownerAffection(cfg)),
+          stageLimit: proactiveLimit(toneNow),
+          proactiveAt: toneNow.source === 'world' ? String(toneNow.proactiveAt || '') : '',
+          insomnia: toneNow.source === 'world' ? toneNow.insomnia === true : false,
           quietHours: String(cfg.quietHours || ''),
         },
         sendToOwner: (text) => this._sendToOwnerPeer(cfg.ownerPeerId, text),
@@ -813,16 +836,25 @@ class WeixinBridgeService {
     try {
       const mem = cfg.memory || {};
       const chat = cfg.chat || {};
+      // 记忆提炼也支持顺位链：chain.memory[0] 为主力，其余作为回落（sidecar 会在失败时轮流试）
+      const memChain = ((cfg.chain || {}).memory || []).filter((c) => c && c.baseURL && c.model);
+      const primary = memChain[0] || {};
       const svc = {
         llm: {
-          base_url: mem.extractionBaseUrl || chat.baseURL || 'https://api.siliconflow.cn/v1',
-          api_key: mem.extractionApiKey || chat.apiKey || '',
-          model: mem.extractionModel || chat.model || '',
+          base_url: primary.baseURL || mem.extractionBaseUrl || chat.baseURL || 'https://api.siliconflow.cn/v1',
+          api_key: primary.apiKey || mem.extractionApiKey || chat.apiKey || '',
+          model: primary.model || mem.extractionModel || chat.model || '',
+          fallbacks: memChain.slice(1).map((c) => ({ base_url: c.baseURL, api_key: c.apiKey || '', model: c.model })),
         },
-        embedder: {
-          ollama_base_url: (cfg.ollama && cfg.ollama.url) || 'http://127.0.0.1:11434',
-          model: (cfg.ollama && cfg.ollama.embedModel) || 'bge-m3',
-        },
+        // 向量（2026-09-13 打通）：以前这里读的是早就不存在的 cfg.ollama，
+        // 于是后台「大脑 → ⑥ 向量接口」填什么都不生效 —— 记忆引擎永远用本地默认。
+        // 现在读的真配置：地址决定 provider，维度由「测连通/真跑一次」实测后写进 embed.dim。
+        embedder: (() => {
+          const ec = this._embedCfg();
+          return ec.local
+            ? { provider: 'ollama', model: ec.model, ollama_base_url: ec.url, embedding_dims: ec.dim || 1024 }
+            : { provider: 'openai', model: ec.model, openai_base_url: ec.url, api_key: ec.apiKey, embedding_dims: ec.dim || 1024 };
+        })(),
         store_path: path.join(this.companionDir, 'mem0-store'),
       };
       fs.writeFileSync(path.join(this.companionDir, 'memory-service.json'), JSON.stringify(svc, null, 2), 'utf8');
@@ -856,6 +888,21 @@ class WeixinBridgeService {
       const r = role(b[k]);
       if (r) out[k] = r;
     }
+    if (b.chain && typeof b.chain === 'object') {
+      // 五个接口各留三个回落槽：[0]=主力, 1~3=回落（2026-09-12）
+      const CH = {};
+      // 注意：这里不能把循环变量叫 role——那会遮蔽上面那个 role() 映射函数，
+      // 于是 list.map(role) 里 role 变成字符串 → TypeError → 保存整包失败（我踩过一次）。
+      for (const rl of ['chat', 'image', 'vision', 'world', 'memory']) {
+        const list = Array.isArray(b.chain[rl]) ? b.chain[rl] : null;
+        if (!list) continue;
+        // 生图/识图各四槽（4+4=8），其余三个接口各三槽
+        const cap = (rl === 'image' || rl === 'vision') ? 4 : 3;
+        const clean = list.map(role).filter(Boolean).slice(0, cap);
+        if (clean.length) CH[rl] = clean;
+      }
+      if (Object.keys(CH).length) out.chain = { ...(out.chain || {}), ...CH };
+    }
     if (Array.isArray(b.fallbacks)) {
       out.fallbacks = b.fallbacks.map(role).filter(Boolean).slice(0, 5);
     }
@@ -877,6 +924,9 @@ class WeixinBridgeService {
       if (['instant', 'human', 'slow'].includes(b.behavior.replySpeed)) B.replySpeed = b.behavior.replySpeed;
       if (Number.isInteger(b.behavior.chunkMax) && b.behavior.chunkMax >= 1 && b.behavior.chunkMax <= 8) B.chunkMax = b.behavior.chunkMax;
       if (Number.isInteger(b.behavior.contextRounds) && b.behavior.contextRounds >= 2 && b.behavior.contextRounds <= 100) B.contextRounds = b.behavior.contextRounds;
+      // 手速倍率（越大越快；上轮打字太慢后加的后台可调项）
+      if (typeof b.behavior.talkiness === 'number' && isFinite(b.behavior.talkiness) && b.behavior.talkiness >= 0 && b.behavior.talkiness <= 100) B.talkiness = Math.round(b.behavior.talkiness);
+      if (typeof b.behavior.speedMul === 'number' && isFinite(b.behavior.speedMul) && b.behavior.speedMul >= 0.5 && b.behavior.speedMul <= 2.5) B.speedMul = Math.round(b.behavior.speedMul * 100) / 100;
       if (Object.keys(B).length) out.behavior = { ...(out.behavior || {}), ...B };
     }
     if (b.memory && typeof b.memory === 'object') {
@@ -901,6 +951,8 @@ class WeixinBridgeService {
       if (num(b.deform.shadow, 30, 100)) D.shadow = Math.round(b.deform.shadow);
       if (Object.keys(D).length) out.deform = { ...(out.deform || {}), ...D };
     }
+    // 「他是谁」已退场（2026-09-13 用户拍板）：她从零认识你，认知全部来自记忆。
+    // 传进来的 ownerProfile 直接忽略，旧配置里的残留键也不再写回。
     if (b.job && typeof b.job === 'object') {
       // 职业机制：职业给"场景"，性格给"强度"。这里只存机制参数（职业名与类型在人设里）。
       const J = {};
@@ -964,13 +1016,20 @@ class WeixinBridgeService {
       if (Object.keys(o).length) out.ollama = { ...(out.ollama || {}), ...o };
     }
     if (b.embed && typeof b.embed === 'object') {
+      // 向量接口（2026-09-13 改）：地址是唯一权威，本地/云端由地址自动判定——
+      // source 不再由用户选（下拉已删），这里改成"跟着地址自动写"，避免地址和来源互相打架。
       const E = {};
-      if (b.embed.source === 'local' || b.embed.source === 'api') E.source = b.embed.source;
       if (typeof b.embed.baseURL === 'string') E.baseURL = b.embed.baseURL.trim().slice(0, 300);
       if (typeof b.embed.url === 'string') E.url = b.embed.url.trim().slice(0, 200);
       if (typeof b.embed.apiKey === 'string') E.apiKey = b.embed.apiKey.trim().slice(0, 300);
       if (typeof b.embed.model === 'string') E.model = b.embed.model.trim().slice(0, 200);
       if (typeof b.embed.embedModel === 'string') E.embedModel = b.embed.embedModel.trim().slice(0, 200);
+      const dv = Number(b.embed.dim);
+      if (isFinite(dv) && dv >= 64 && dv <= 8192) E.dim = Math.round(dv);
+      // 来源跟着地址走（本地地址=local，其余=api）
+      const probe = String(E.url != null ? E.url : E.baseURL || '');
+      if (probe) E.source = /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(probe.trim()) ? 'local' : 'api';
+      else if (b.embed.source === 'local' || b.embed.source === 'api') E.source = b.embed.source;
       if (Object.keys(E).length) out.embed = { ...(out.embed || {}), ...E };
     }
     if (b.life && typeof b.life === 'object') {
@@ -1015,7 +1074,15 @@ class WeixinBridgeService {
     const cfg = this._modelConfig();
     const isOwner = !!cfg.ownerPeerId && cfg.ownerPeerId === peer;
     const mediaCount = content.filter((c) => c.type !== 'text').length;
-    const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, text, mediaCount, today: this.today(), world: this.world.state(), voiceRate: isOwner ? Number((cfg.behavior && cfg.behavior.voiceRate) || 0) : 0 });
+          const hitCatchup = isOwner && this.life && this.life.consumeMorningCatchup ? this.life.consumeMorningCatchup() : false;
+      // 她真的睡着了（夜间三态）：不回消息、不消耗模型，只记一笔；第二天早上她会自己提
+      const np = this.life && this.life.nightPhase ? this.life.nightPhase(new Date()) : 'awake';
+      if (np === 'asleep') {
+        try { this.life.markSleptThrough(); } catch {}
+        this.activity('[睡] 她已睡着，这条先不打扰她：' + String(text || '').slice(0, 30));
+        return;
+      }
+const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, text, mediaCount, today: this.today(), world: this.world.state(), voiceRate: isOwner ? Number((cfg.behavior && cfg.behavior.voiceRate) || 0) : 0, nightPhase: np, morningCatchup: hitCatchup });
     if (out.thought) this.activity('[思考] ' + out.thought);
     for (let i = 0; i < out.chunks.length; i++) {
       const delay = i < out.delaysMs.length ? out.delaysMs[i] : 800;
@@ -1041,7 +1108,7 @@ class WeixinBridgeService {
     void this.soul.recordConversation({ peerKey: accountId + ':' + peer, isOwner, userText: text, herTexts: out.chunks }).then((sig) => {
       if (sig && sig.rude) this._dayEvent('rude', text.slice(0, 30));
       if (sig && sig.warm) this._dayEvent('warm', text.slice(0, 30));
-      void this._maybeRename(); // 阶段跃迁过？让她自己想想要不要换个叫法
+      // 第三次改版：不再因阶段跃迁自动改称呼（称呼由世界引擎的分寸决定；后台仍可手动点「让她现在想一个」）
     }).catch(() => {});
   }
 
@@ -2162,16 +2229,15 @@ class WeixinBridgeService {
             if (!ownerRaw) break;
             if (k === ownerRaw || k.endsWith(':' + ownerRaw)) { ownerRel = { key: k, ...rels[k] }; break; }
           }
-          const aff = ownerRel && typeof ownerRel.affection === 'number' ? ownerRel.affection : 0;
-          const cur = this.soul.stageOf(aff);
-          const table = this.soul.stageTable();
-          const nxt = table.find((x) => x.min > aff) || null;
+          // 第三次改版：亲密度/关系阶段退场 —— 只下发"相处的事实"
           const relation = {
-            hasOwner: !!ownerRaw, ownerKey: ownerRel ? ownerRel.key : '', stage: cur.label, stageMin: cur.min, callHint: cur.callHint,
-            affection: Math.round(aff), mood: ownerRel ? Math.round(ownerRel.mood || 0) : 0, chats: ownerRel ? (ownerRel.chats || 0) : 0,
-            firstSeen: ownerRel ? ownerRel.firstSeen : 0,
-            next: nxt ? { label: nxt.label, min: nxt.min, need: Math.max(0, Math.round((nxt.min - aff) * 10) / 10) } : null,
-            stages: table,
+            hasOwner: !!ownerRaw,
+            ownerKey: ownerRel ? ownerRel.key : '',
+            callsMe: ((this.soul.getPersona().relationship) || {}).ownerCallsMe || '',
+            chats: ownerRel ? (ownerRel.chats || 0) : 0,
+            firstSeen: ownerRel ? (ownerRel.firstSeen || 0) : 0,
+            lastSeen: ownerRel ? (ownerRel.lastSeen || 0) : 0,
+            mood: ownerRel ? Math.round(ownerRel.mood || 0) : 0,
           };
           return send(200, { ok: true, today: this.today(), deform: this.deform.info(), world: this.world.state(), evolution: this.soul.readEvolution(), relation });
         } catch (err) { return send(200, { ok: true, today: null, error: err.message }); }
@@ -2336,16 +2402,95 @@ class WeixinBridgeService {
         this.soul.updateRelationship({ renameLock: !!b.locked, renamePending: null });
         return send(200, { ok: true, locked: !!b.locked });
       }
+      if (req.method === 'POST' && path === 'panel/relation/name') {
+        // 备注名：只改后台显示（用户拍板 2026-09-13：不改她的记忆、不改她怎么称呼对方）
+        const b = await readBody();
+        try {
+          const r = this.soul.setRelationName(b.key, b.name);
+          return send(200, { ok: true, ...r });
+        } catch (err) { return send(400, { ok: false, error: err.message }); }
+      }
       if (req.method === 'GET' && path === 'panel/portrait') {
         return send(200, { ok: true, portrait: (this.world.state() || {}).portrait || '' });
       }
+      if (req.method === 'GET' && path === 'panel/diary/days') {
+        // 已留档的日期（新→旧）：后台「世界 → 她的日记」的月历据此点亮
+        return send(200, { ok: true, days: this.world.diaryDays() });
+      }
+      if (req.method === 'GET' && path === 'panel/diary') {
+        // 看某一天的完整存档（Markdown 原文）。没带 date = 只看最近一晚。
+        const date = String(url.searchParams.get('date') || '').slice(0, 10);
+        const cur = this.world.state() || {};
+        const days = this.world.diaryDays();
+        return send(200, {
+          ok: true, date, days,
+          markdown: date ? this.world.diaryOf(date) : '',
+          latest: { date: cur.date || '', forDate: cur.forDate || '', diary: cur.diary || '', generatedAt: cur.generatedAt || 0 },
+        });
+      }
       if (req.method === 'POST' && path === 'panel/portrait') {
-        const body = await readBody();
-        const s = this.world.state();
-        s.portrait = String(body.portrait || '').slice(0, 300);
-        s.generatedAt = Date.now();
-        this.world._write(s);
-        return send(200, { ok: true, portrait: s.portrait });
+        // 第三次改版（用户拍板 2026-09-13）：画像完全归世界引擎，后台不再提供手改入口。
+        // 手改会被当晚的世界引擎重写（"能保存≠生效"的黑盒），所以直接拒绝而不是假装保存成功。
+        return send(400, { ok: false, error: '画像由世界引擎每晚重写，后台已不提供手改（在「世界 → 世界引擎API」里点「立刻生成一次世界」可立即重写）' });
+      }
+      if (req.method === 'POST' && path === 'panel/reset') {
+        // 一键重置（破坏性）：可分别勾选 记忆 / 聊天上下文 / 关系 / 她的生活；可先自动备份。
+        // 设计原则：①默认全部不勾（必须用户主动勾）②返回值里逐项报告删了什么，避免"黑盒式清空"
+        const b = await readBody();
+        const want = {
+          memory: !!b.memory,
+          history: !!b.history,
+          relation: !!b.relation,
+          life: !!b.life,
+        };
+        const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+        const bdir = joinPath(this.companionDir, '..', 'wechat-companion-backups', '重置前-' + stamp);
+        const report = { backupDir: '', removed: {}, note: [] };
+        const targets = [];
+        if (want.memory) targets.push('memory.json', 'memory-meta.json');
+        if (want.relation) targets.push('relations.json');
+        if (want.life) targets.push('world-state.json', 'daily-state.json', 'deform-state.json', 'evolution.json');
+        if (b.backup) {
+          try {
+            fs.mkdirSync(bdir, { recursive: true });
+            for (const f of [...targets, 'persona.json']) { try { fs.copyFileSync(joinPath(this.companionDir, f), joinPath(bdir, f)); } catch {} }
+            if (want.history) { try { fs.cpSync(joinPath(this.companionDir, 'history'), joinPath(bdir, 'history'), { recursive: true }); } catch {} }
+            if (want.memory) { try { fs.cpSync(joinPath(this.companionDir, 'mem0-store'), joinPath(bdir, 'mem0-store'), { recursive: true }); } catch {} }
+            report.backupDir = bdir;
+          } catch (err) { report.note.push('备份失败（已中止重置）：' + err.message); return send(500, { ok: false, ...report }); }
+        }
+        // 记忆：逐条走她的记忆接口删（引擎内存索引一起清），再清本地镜像
+        if (want.memory) {
+          try {
+            const view = await this.soul.memoriesView();
+            const ids = (view.entries || []).map((e) => e.id).filter(Boolean);
+            for (const id of ids) { try { await this.soul.deleteMemory(id); } catch {} }
+            const left = ((await this.soul.memoriesView()).entries || []).length;
+            report.removed.memory = ids.length + ' 条' + (left ? ('（还有 ' + left + ' 条没删掉）') : '（已清空）');
+          } catch (err) { report.note.push('清记忆时出错：' + err.message); }
+          // 注意形状：必须是 {entries:[],todos:[]}，写成裸数组 [] 会让读取方 .entries 变 undefined → 她一说话就崩
+          try { fs.writeFileSync(joinPath(this.companionDir, 'memory.json'), JSON.stringify({ entries: [], todos: [] }, null, 2), 'utf8'); } catch {}
+          try { fs.writeFileSync(joinPath(this.companionDir, 'memory-meta.json'), '{}', 'utf8'); } catch {}
+        }
+        // 聊天上下文
+        if (want.history) {
+          let n = 0;
+          try {
+            const hd = joinPath(this.companionDir, 'history');
+            for (const f of fs.readdirSync(hd)) { if (f.endsWith('.json')) { try { fs.unlinkSync(joinPath(hd, f)); n++; } catch {} } }
+          } catch {}
+          report.removed.history = n + ' 个会话文件';
+        }
+        // 关系 / 她的生活：直接删文件（下次自动重建）
+        for (const [k, list] of [['relation', ['relations.json']], ['life', ['world-state.json', 'daily-state.json', 'deform-state.json', 'evolution.json']]]) {
+          if (!want[k]) continue;
+          let n = 0;
+          for (const f of list) { try { fs.unlinkSync(joinPath(this.companionDir, f)); n++; } catch {} }
+          report.removed[k] = n + ' 个文件';
+        }
+        this.activity('[重置] ' + JSON.stringify(report.removed));
+        this.ctx.logger?.info?.('[reset] ' + JSON.stringify(report));
+        return send(200, { ok: true, ...report });
       }
       if (req.method === 'POST' && path === 'panel/weather/test') {
         // 「天气到底接没接上」：拿她人设里的城市真查一次，把结果或失败原因原样返回
@@ -2361,11 +2506,15 @@ class WeixinBridgeService {
       }
       if (req.method === 'POST' && path === 'panel/world/generate') {
         if (!this.running) return send(400, { error: '服务未启动' });
+        // 指定日期 = 补那一天的剧本（当成那天深夜生成，这样 forDate 正好是那一天）
+        const _b = await readBody();
+        const _want = String(_b.date || '').trim();
+        const _now = /^\d{4}-\d{2}-\d{2}$/.test(_want) ? new Date(_want + 'T23:30:00') : new Date();
         this._worldBusy = true;
-        void this.world.generate({ persona: this.soul.getPersona(), today: this.today(), memories: (this.soul.getMemories().entries || []).slice(-12) })
+        void this.world.generate({ now: _now, persona: this.soul.getPersona(), today: this.today(), memories: (this.soul.getMemories().entries || []).slice(-12) })
           .then((out) => { this._worldBusy = false; this.activity('[世界] 手动生成完成'); this._applyWorkload(out.workload); })
           .catch((e) => { this._worldBusy = false; this.ctx.logger?.warn?.('[world] ' + e.message); });
-        return send(200, { ok: true, note: '世界生成中，约10-30秒' });
+        return send(200, { ok: true, note: '世界生成中，约10-30秒', forDate: /^\d{4}-\d{2}-\d{2}$/.test(_want) ? _want : '' });
       }
       if (req.method === 'GET' && path === 'panel/moments') {
         return send(200, { ok: true, drafts: this.moments.list() });
@@ -2439,6 +2588,46 @@ class WeixinBridgeService {
         const body = await readBody();
         const models = await fetchModels({ baseURL: String(body.baseURL || ''), apiKey: String(body.apiKey || '') });
         return send(200, { ok: true, models });
+      }
+      if (req.method === 'POST' && path === 'panel/embed/probe') {
+        // 向量接口"真跑一次"（2026-09-13 加）：打一次真实的 embedding 调用，量出**维度**。
+        // 为什么要维度：mem0 的 faiss 库是按维度建的，换模型维度不同就必须重建库，否则一直检索不准。
+        // 测通后把维度写进 config.embed.dim，并立刻同步给记忆引擎 sidecar（它是真消费方）。
+        const b = await readBody();
+        const url = String(b.url || '').trim().replace(/\/+$/, '');
+        const apiKey = String(b.apiKey || '');
+        const model = String(b.model || 'bge-m3');
+        const local = !url || /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])(:|\/|$)/i.test(url);
+        const t0 = Date.now();
+        try {
+          let vec;
+          if (local) {
+            const r = await fetch((url || 'http://127.0.0.1:11434') + '/api/embeddings', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ model, prompt: '连通性测试' }), signal: AbortSignal.timeout(30000),
+            });
+            if (!r.ok) throw new Error('HTTP ' + r.status + '（本地 Ollama 是否在跑？模型 ' + model + ' 是否已 pull？）');
+            const d = await r.json();
+            vec = d.embedding;
+          } else {
+            vec = await embedText({ baseURL: url, apiKey, model, input: '连通性测试' });
+          }
+          const dims = Array.isArray(vec) ? vec.length : 0;
+          if (!dims) throw new Error('返回里没有向量（检查模型名是否是嵌入模型）');
+          // 把这次测出来的维度存进配置（真实消费点：sidecar 的 embedding_dims）
+          const saved = this._writeCompanionConfig(this._sanitizeConfig({
+            ...this._modelConfig(),
+            embed: { url: url || 'http://127.0.0.1:11434', apiKey, model, dim: dims },
+          }));
+          const sidecar = (saved.embed || {});
+          return send(200, {
+            ok: true, dims, ms: Date.now() - t0, local,
+            detail: (local ? '本地 Ollama' : '云端接口') + ' · ' + model + ' · 实测 ' + dims + ' 维',
+            saved: { url: sidecar.url || '', model: sidecar.model || '', dim: sidecar.dim || dims, source: sidecar.source || '' },
+          });
+        } catch (err) {
+          return send(200, { ok: false, error: err.message, ms: Date.now() - t0, local });
+        }
       }
       if (req.method === 'GET' && path === 'panel/persona') {
         const P = this.soul.getPersona();

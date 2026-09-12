@@ -239,4 +239,56 @@ ok(!!(r.json.config && r.json.config.type) && r.json.config.inferredFrom === '�
 r = await call('POST', '/wechat-companion/panel/job/infer', {});
 ok(r.code === 200 && r.json.ok && r.json.job.type === 'none', '职业为空 → 明确判成"无固定工作"（不编作息）');
 
+// 11) 一键重置：勾选范围 + 先备份 + 不勾不删
+r = await call('POST', '/wechat-companion/panel/memory', { op: 'add', text: '他不吃香菜', importance: 3 });
+ok(r.json.ok === true, '重置前先塞一条记忆进去');
+r = await call('POST', '/wechat-companion/panel/reset', { backup: true });
+ok(r.json.ok === true && Object.keys(r.json.removed || {}).length === 0, '什么都没勾 → 什么都不删（安全默认）');
+r = await call('POST', '/wechat-companion/panel/reset', { memory: true, backup: true });
+ok(r.json.ok === true && /条/.test(String((r.json.removed || {}).memory)), '勾了记忆 → 报告删了几条（' + (r.json.removed || {}).memory + '）');
+ok(!!r.json.backupDir && fs.existsSync(r.json.backupDir), '勾了"先备份" → 备份目录真的存在');
+r = await call('GET', '/wechat-companion/panel/memory');
+ok((r.json.entries || []).length === 0, '清理后记忆为 0 条');
+r = await call('POST', '/wechat-companion/panel/reset', { history: true, relation: true, life: true, backup: false });
+ok(r.json.ok === true && r.json.removed.history && r.json.removed.relation && r.json.removed.life, '聊天上下文/关系/生活都能单独清，并逐项报告');
+ok(!r.json.backupDir, '不勾备份 → 不产生备份目录');
+// 记忆文件形状必须正确：曾经写成裸数组 [] → 她一说话就 "mem.entries.filter is not a function"
+const memFile = path.join(home, 'wechat-companion', 'memory.json');
+const rawMem = JSON.parse(fs.readFileSync(memFile, 'utf8'));
+ok(!Array.isArray(rawMem) && Array.isArray(rawMem.entries), '重置后 memory.json 是 {entries:[],todos:[]} 形状（不是裸数组）');
+r = await call('POST', '/wechat-companion/panel/soul-test', { text: '在吗' });
+ok(String(r.json.error || '').indexOf('filter') < 0, '重置后回话不再报 filter 错误（无模型时应是"对话模型"这类错误）');
+// 容错：把文件故意写成裸数组/坏值，读取也不该崩
+fs.writeFileSync(memFile, '[]', 'utf8');
+r = await call('POST', '/wechat-companion/panel/memory', { op: 'add', text: '容错测试' });
+ok(r.json.ok === true && (r.json.entries || []).length >= 1, '记忆文件是裸数组时也能正常写入（自动规整）');
+fs.writeFileSync(memFile, '不是JSON', 'utf8');
+r = await call('GET', '/wechat-companion/panel/memory');
+ok(r.json.ok === true, '记忆文件是坏内容时读取也不崩');
+
+// 12) 顺位链：后台界面保存的链必须真能存住（否则就是"显示已保存其实不生效"的黑盒）
+r = await call('POST', '/wechat-companion/panel/config', { chain: { chat: [
+  { baseURL: 'https://a.example/v1', apiKey: 'k1', model: 'M-1' },
+  { baseURL: 'https://b.example/v1', apiKey: 'k2', model: 'M-2' },
+  { baseURL: 'https://c.example/v1', apiKey: 'k3', model: 'M-3' },
+] } });
+ok(r.json.ok === true, '保存对话链');
+r = await call('GET', '/wechat-companion/panel/config');
+{
+  const l = ((r.json.config || {}).chain || {}).chat || [];
+  ok(l.length === 3 && l[0].model === 'M-1' && l[2].model === 'M-3', '对话链三条按顺位存住（' + l.map((x) => x.model).join('→') + '）');
+  ok(l[0].apiKey === 'k1', '每槽的密钥也各自存住（不是共用一把）');
+}
+r = await call('POST', '/wechat-companion/panel/config', { chain: { world: [
+  { baseURL: 'https://w1/v1', model: 'W-1' }, { baseURL: 'https://w2/v1', model: 'W-2' }, { baseURL: 'https://w3/v1', model: 'W-3' }, { baseURL: 'https://w4/v1', model: 'W-4' },
+] } });
+r = await call('GET', '/wechat-companion/panel/config');
+ok((((r.json.config || {}).chain || {}).world || []).length === 3, '超过三槽会被截到三个（每个接口三个槽就够）');
+
 console.log('\nBOOT-SMOKE ALL GREEN ✅  家目录: ' + home);
+
+
+// 显式退出（2026-09-13 修）：本测试会拉起定时器 / 向量预热等后台任务，事件循环不会自己空掉
+// → 进程跑完不退出，外部看起来就是"烟测卡死"。断言失败时上面的 throw 会让进程以非 0 退出，
+// 只有全绿才会执行到这里，所以这里就是"成功退出"的唯一出口。
+process.exit(0);

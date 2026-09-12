@@ -89,7 +89,7 @@ ok(!r.ok && /ollama pull/.test(r.hint), '本地模型没拉过 → 给出 `ollam
 r = await T({ role: 'asr', deep: true, form: { baseURL: BASE, apiKey: 'k', model: 'm-asr' }, saved: { chat: { baseURL: BASE, apiKey: 'k', model: 'm-chat' } } });
 ok(r.ok, '没配 TTS 时，语音识别退回静音样本也能测通接口');
 r = await T({ role: '不存在的接口', deep: true, form: {} });
-ok(!r.ok && /未知接口/.test(r.detail), '未知接口名安全失败');
+ok(!r.ok && /还没有探针|可用角色/.test(String(r.detail) + String(r.hint)), '不认识的接口名安全失败，并告诉你有哪些可用');
 ok(resolveConf('vision', savedCfg, {}).baseURL === BASE, '留空=沿用对话接口（同一套回落规则）');
 ok(Array.isArray(seen) && seen.some((x) => x.includes('/v1/chat/completions')), '真跑确实发出了真实 HTTP 请求');
 ok(saved.length >= 3 && saved.every((f) => fs.existsSync(f)), '真跑产生的文件都落盘了（' + saved.length + ' 个）');

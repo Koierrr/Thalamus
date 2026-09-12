@@ -56,25 +56,43 @@ function dayKey(now) {
 
   // 世界引擎接入：她昨晚睡着后，世界引擎已经为今天排好了剧本（作息/心情/痴迷）
   let world = null;
+  let wsAny = null;
   try {
     const ws = JSON.parse(fs.readFileSync(path.join(companionDir, 'world-state.json'), 'utf8'));
+    wsAny = ws;
     if (ws && ws.forDate === key) world = ws;
   } catch {}
 
   const hmOk = (s) => /^\d{1,2}:\d{2}$/.test(String(s || ''));
+  // 第三次改版：生活节奏以世界引擎推断的为准（覆盖后台设置）；它没推过就用后台的值
+  const wr = (wsAny && wsAny.tone && wsAny.tone.rhythm) || null;
+  const R = wr ? {
+    baseWake: hmOk(wr.baseWake) ? wr.baseWake : (B.baseWake || '07:30'),
+    baseSleep: hmOk(wr.baseSleep) ? wr.baseSleep : (B.baseSleep || '23:30'),
+    weekendShiftMin: (wr.weekendShiftMin == null ? B.weekendShiftMin : wr.weekendShiftMin),
+    nightOwlProb: (wr.nightOwlProb == null ? B.nightOwlProb : wr.nightOwlProb),
+    allNighterProb: (wr.allNighterProb == null ? B.allNighterProb : wr.allNighterProb),
+  } : B;
+  const rhythmFrom = wr ? 'world' : 'config';
+  const rhythmNote = [];
+  if (wr) {
+    if (hmOk(wr.baseWake) && wr.baseWake !== B.baseWake) rhythmNote.push('基准起床 ' + (B.baseWake || '—') + ' → ' + wr.baseWake);
+    if (hmOk(wr.baseSleep) && wr.baseSleep !== B.baseSleep) rhythmNote.push('基准睡觉 ' + (B.baseSleep || '—') + ' → ' + wr.baseSleep);
+  }
+
   let allNighter = false, nightOwl = false, worldAuthored = false;
-  let wake = B.baseWake || '07:30';
-  let sleep = B.baseSleep || '23:30';
+  let wake = R.baseWake || '07:30';
+  let sleep = R.baseSleep || '23:30';
   if (world && (hmOk(world.wake) || hmOk(world.sleep))) {
     // 世界引擎定的今天：作息照剧本走（剧情熬夜→赖床，都写进时间里了）
     worldAuthored = true;
     if (hmOk(world.wake)) wake = world.wake;
     if (hmOk(world.sleep)) sleep = world.sleep;
   } else {
-    allNighter = rnd() < (B.allNighterProb == null ? 0.03 : B.allNighterProb);
-    nightOwl = !allNighter && rnd() < (B.nightOwlProb == null ? 0.15 : B.nightOwlProb);
+    allNighter = rnd() < (R.allNighterProb == null ? 0.03 : R.allNighterProb);
+    nightOwl = !allNighter && rnd() < (R.nightOwlProb == null ? 0.15 : R.nightOwlProb);
     // 周末赖床：设的是上限，实际每天在 30%~100% 之间随机
-    const weekendShift = isWeekend ? Math.round((B.weekendShiftMin == null ? 60 : B.weekendShiftMin) * (0.3 + rnd() * 0.7)) : 0;
+    const weekendShift = isWeekend ? Math.round((R.weekendShiftMin == null ? 60 : R.weekendShiftMin) * (0.3 + rnd() * 0.7)) : 0;
     if (allNighter) {
       sleep = hmAdd(sleep, 240 + Math.round(rnd() * 180));
       wake = hmAdd(wake, 300 + Math.round(rnd() * 120));
@@ -148,6 +166,7 @@ function dayKey(now) {
   const state = {
     date: key, wake, sleep, allNighter, nightOwl, weekend: isWeekend, busyDay,
     mood, chatter, speedState, battery, activeToday, focus, events, worldAuthored, traitDrift: dr,
+    rhythmFrom: rhythmFrom, rhythmNote: rhythmNote,
     job: J ? { type: J.type, label: jt.label, workday: !!isWorkday, intensity: jobIntensity, workStart: J.workStart || '', workEnd: J.workEnd || '', source: J.source || (cfgJob ? 'config' : '') } : null,
     generatedAt: Date.now(),
   };
@@ -203,5 +222,6 @@ export function applyDayEvent(companionDir, kind, traits = {}, opts = {}) {
   const baseB = traits.socialBattery == null ? 50 : traits.socialBattery;
   st.battery = Math.round(Math.min(95, Math.max(10, baseB + (dr.socialBattery || 0))));
   try { fs.writeFileSync(file, JSON.stringify(st, null, 2), 'utf8'); } catch { return null; }
-  return { applied, label: spec.label, traitDrift: dr, battery: st.battery };
+  return {
+    applied, label: spec.label, traitDrift: dr, battery: st.battery };
 }

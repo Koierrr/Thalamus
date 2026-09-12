@@ -199,17 +199,56 @@ export class ModelRouter {
 
   get cfg() { return this._get() || {}; }
 
+  /**
+   * 某个角色的顺位链（2026-09-12 新增：五个接口各留三个回落槽）
+   * 优先用 cfg.chain[role]（一个数组，[主力, 回落1, 回落2, 回落3]）；
+   * 没配 chain 就退回老写法 [cfg[role], ...cfg.fallbacks]（向后兼容）。
+   */
+  _chain(role, primaryKey) {
+    const out = [];
+    const ch = (this.cfg.chain || {})[role];
+    if (Array.isArray(ch) && ch.length) {
+      ch.forEach((c, i) => {
+        if (c && c.baseURL && c.model) out.push({ label: role + '.' + (i === 0 ? 'primary' : 'fallback' + i), ...c });
+      });
+      return out;
+    }
+    const pri = this.cfg[primaryKey || role];
+    if (pri && pri.baseURL && pri.model) out.push({ label: role + '.primary', ...pri });
+    if (role === 'chat') {
+      for (const fb of this.cfg.fallbacks || []) {
+        if (fb && fb.baseURL && fb.model) out.push({ label: 'chat.fallback', ...fb });
+      }
+    }
+    return out;
+  }
+
+  /** 依次尝试一条链，全部失败时抛出带每一条原因的错（排查"到底谁挂了"用） */
+  async _tryChain(role, primaryKey, run) {
+    const chain = this._chain(role, primaryKey);
+    if (!chain.length) throw new Error(role + ' 未配置任何接口');
+    const errors = [];
+    for (const a of chain) {
+      try {
+        const r = await run(a);
+        this.lastBackend = a.label;
+        // 数组（生图返回 [{url|b64}]）与字符串（识图描述）原样返回——展开会把调用方弄坏
+        if (Array.isArray(r) || typeof r === 'string' || r === null || r === undefined) return r;
+        return { ...r, backend: a.label };
+      } catch (err) {
+        errors.push(a.label + '(' + (a.model || '?') + '): ' + err.message);
+      }
+    }
+    throw new Error('全部 ' + chain.length + ' 个接口都失败了 → ' + errors.join(' | '));
+  }
+
   _params(over = {}) {
     return { ...(this.cfg.params || {}), ...over };
   }
 
   async chat(messages, over = {}, signal) {
     const p = this._params(over);
-    const attempts = [];
-    if (this.cfg.chat?.baseURL && this.cfg.chat?.model) attempts.push({ label: 'chat.primary', ...this.cfg.chat });
-    for (const fb of this.cfg.fallbacks || []) {
-      if (fb?.baseURL && fb?.model) attempts.push({ label: 'chat.fallback', ...fb });
-    }
+    const attempts = this._chain('chat', 'chat');
     const errors = [];
     for (const a of attempts) {
       try {
@@ -220,7 +259,7 @@ export class ModelRouter {
         this.lastBackend = a.label;
         return { ...r, backend: a.label };
       } catch (err) {
-        errors.push(a.label + ': ' + err.message);
+        errors.push(a.label + '(' + (a.model || '?') + '): ' + err.message);
       }
     }
     if (this.cfg.ollama?.model) {
@@ -236,8 +275,11 @@ export class ModelRouter {
   }
 
   async image(prompt, over = {}, signal) {
-    const cfg = { ...this.cfg.image, ...over };
-    return generateImage({ baseURL: cfg.baseURL, apiKey: cfg.apiKey, model: cfg.model, prompt, size: cfg.size, n: cfg.n || 1, signal });
+    const base = { ...this.cfg.image, ...over };
+    return this._tryChain('image', 'image', (a) => {
+      const cfg = { ...base, ...a };
+      return generateImage({ baseURL: cfg.baseURL, apiKey: cfg.apiKey, model: cfg.model, prompt, size: cfg.size, n: cfg.n || 1, signal });
+    });
   }
 
   async tts(input, over = {}, signal) {
@@ -253,18 +295,22 @@ export class ModelRouter {
 
   /** 识图（主模型没眼睛时借眼睛）：返回图片文字描述 */
   async visionDescribe({ imageData, mime, prompt }, over = {}, signal) {
-    const cfg = { ...this.cfg.vision, ...over };
-    if (!cfg.baseURL || !cfg.model) throw new Error('vision baseURL/model 未配置');
+    const base = { ...this.cfg.vision, ...over };
     const b64 = Buffer.from(imageData).toString('base64');
-    const data = await postJson(normalizeBaseUrl(cfg.baseURL) + '/chat/completions', cfg.apiKey, {
-      model: cfg.model,
-      messages: [{ role: 'user', content: [
-        { type: 'text', text: prompt || '用一两句话描述这张图片的内容' },
-        { type: 'image_url', image_url: { url: 'data:' + (mime || 'image/jpeg') + ';base64,' + b64 } },
-      ] }],
-      max_tokens: 300,
-    }, 120000, signal);
-    return data.choices?.[0]?.message?.content || '';
+    return this._tryChain('vision', 'vision', async (a) => {
+      const cfg = { ...base, ...a };
+      const data = await postJson(normalizeBaseUrl(cfg.baseURL) + '/chat/completions', cfg.apiKey, {
+        model: cfg.model,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: prompt || '用一两句话描述这张图片的内容' },
+          { type: 'image_url', image_url: { url: 'data:' + (mime || 'image/jpeg') + ';base64,' + b64 } },
+        ] }],
+        max_tokens: 300,
+      }, 120000, signal);
+      const text = data.choices?.[0]?.message?.content || '';
+      if (!text.trim()) throw new Error('返回空内容');
+      return text;
+    });
   }
 
   /** 云端向量（OpenAI 兼容 /embeddings） */

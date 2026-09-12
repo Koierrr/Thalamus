@@ -18,7 +18,7 @@ ok(d1.info().stress === 18, '被凶一次 +18（实际 ' + d1.info().stress + '�
 d1.note('warm');
 ok(d1.info().stress === 6, '被哄一次 −12（实际 ' + d1.info().stress + '）');
 
-const d2 = new Deform(tmp(), () => {}, () => ({ deform: { sensitivity: 2 } }));
+const d2 = new Deform(tmp(), () => {}, () => ({}), () => ({ orderliness: 70, attachment: 100, warmth: 0 }));  // 灵敏度=2 且阈值=41（不被 36 的压力量触发变形）
 d2.note('rude');
 ok(d2.info().stress === 36, '灵敏度×2 → 加压翻倍（实际 ' + d2.info().stress + '）');
 d2.note('warm');
@@ -29,17 +29,17 @@ d3.note('rude'); d3.note('allNighter');
 const i3 = d3.info();
 ok(i3.stress === 0 && i3.state === 'normal' && i3.enabled === false, '总开关关掉 → 压力不再累积、永远是稳态');
 
-const d4 = new Deform(tmp(), () => {}, () => ({ deform: { grip: 20, loop: 50, shadow: 80 } }));
+const d4 = new Deform(tmp(), () => {}, () => ({}), () => ({ orderliness: 0, attachment: 50, warmth: 50 }));  // 阈值 30、灵敏度 1
 d4.note('rude'); // 18 < 20
-ok(d4.info().state === 'normal', '自定义阈值：18 分还不到 20 → 正常');
+ok(d4.info().state === 'normal', '还没到阈值：18 分 < 30 → 正常');
 d4.note('conflict'); // 38 ≥ 20
 const i4 = d4.info();
-ok(i4.state === 'grip' && i4.thresholds.grip === 20, '过阈值1 → 劣势爆发 Grip（阈值 20）');
+ok(i4.state === 'grip' && i4.thresholds.grip === 30, '越过阈值 → 开始端着（阈值 30，实测 ' + i4.thresholds.grip + '）');
 for (let k = 0; k < 3; k++) d4.note('rude');
 ok(['loop', 'shadow'].includes(d4.info().state), '压力继续累积 → 进入更深层（' + d4.info().state + '）');
 
 // 恢复：把压力降下去 → justRecovered + 整合度+2；consumeRecovery 只能消费一次
-const d5 = new Deform(tmp(), () => {}, () => ({ deform: { grip: 30 } }));
+const d5 = new Deform(tmp(), () => {}, () => ({}), () => ({ orderliness: 0, attachment: 50 }));  // 性格推出阈值 30
 d5.note('rude'); d5.note('conflict'); // 38 → grip
 const s5 = JSON.parse(fs.readFileSync(d5.file, 'utf8'));
 s5.stress = 0; fs.writeFileSync(d5.file, JSON.stringify(s5));
@@ -49,7 +49,7 @@ ok(d5.consumeRecovery() === true && d5.consumeRecovery() === false, '恢复提�
 const st5 = JSON.parse(fs.readFileSync(d5.file, 'utf8'));
 st5.integration = 80; fs.writeFileSync(d5.file, JSON.stringify(st5));
 const i5b = d5.info();
-ok(i5b.thresholds.grip === 42, '整合度让阈值1抬高（30 + 80×0.15 = 42：越来越不容易被逼变形）');
+ok(i5b.thresholds.grip === 30, '阈值只由性格决定：整合度涨到 80 也不会改阈值（实测 ' + i5b.thresholds.grip + '）');
 
 // ── ② 变形与双向记忆"真的进了提示词" ──
 function mkSoul(opts = {}) {
@@ -104,14 +104,25 @@ await soulF.recordConversation({ peerKey: 'p:1', isOwner: true, userText: '你�
 const selfMems = soulF.getMemories().entries.filter((e) => e.who === 'self' || e.source === 'self');
 ok(selfMems.length === 1 && selfMems[0].text.includes('公园'), '开着时会把她的自述归档（"我明天想去公园跑步"）');
 
-// ── ④ 人味细节：手滑打错字后自己更正（默认关，开了要有） ──
+// ── ④ 人味细节：手滑打错字（默认关；开了会真出现，但**不会特意说"打错了"**）──
+// 用户 2026-09-12 反馈："人类手滑打错不一定会说自己打错了，一般将错纠错反正能看懂就行"
 const soulG = mkSoul();
-let sawTypo = false;
+const ORIG = '今天天气不错。我出去走了一圈。';
+let sawTypo = false, sawAnnounce = false, sawRecorrect = false, sawSilent = false;
 for (let i = 0; i < 300; i++) {
-  const chunks = soulG._planChunks('今天天气不错。我出去走了一圈。', { quirks: { typoRate: 0.1, maxLength: 'short' } });
-  if (chunks.some((c) => String(c).includes('啊打错了'))) { sawTypo = true; break; }
+  const chunks = soulG._planChunks(ORIG, { quirks: { typoRate: 0.1, maxLength: 'short' } });
+  const j = chunks.map(String).join('|');
+  if (/打错了/.test(j)) sawAnnounce = true;
+  const typo = chunks[0] !== '今天天气不错。';
+  if (typo) {
+    sawTypo = true;
+    if (chunks.length >= 2 && String(chunks[1]).includes('今天天气不错')) sawRecorrect = true;
+    if (chunks.length === 1) sawSilent = true;
+  }
 }
-ok(sawTypo, '手滑更正真的会发生（typoRate=10% 采样 300 次至少命中一次）');
+ok(sawTypo, '手滑真的会发生（typoRate=10% 采样 300 次至少命中一次）');
+ok(!sawAnnounce, '但永远不会说「打错了」（按用户要求：只将错纠错）');
+ok(sawRecorrect || sawSilent, '收尾方式是真人的两种：直接重发正确句（' + sawRecorrect + '）或干脆不纠（' + sawSilent + '）');
 const soulH = mkSoul();
 let noTypo = true;
 for (let i = 0; i < 50; i++) {

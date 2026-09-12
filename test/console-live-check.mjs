@@ -42,9 +42,21 @@ app.whenReady().then(async () => {
     if (/error|Error|not a function|undefined|null/.test(msg)) errs.push(msg.slice(0, 300));
   });
   win.webContents.on('did-fail-load', (_e, code, desc) => errs.push('did-fail-load ' + code + ' ' + desc));
+  // 先探活：插件服务没跑的时候，页面会到处"加载失败"——那是环境问题，不是代码问题，要分开报
+  let upstreamUp = false;
+  try {
+    const r = await fetch(UPSTREAM + '/wechat-companion/status', { signal: AbortSignal.timeout(3000) });
+    upstreamUp = r.ok;
+  } catch { upstreamUp = false; }
+  if (!upstreamUp) {
+    console.log('⚠️  连不上插件服务 ' + UPSTREAM + '（DSH 没在跑？端口不对？）。');
+    console.log('   这个检查需要"真后端"，先启动 DSH 再来；或者用 test/_probe.mjs（假后端）看纯前端。');
+    app.exit(2);
+    return;
+  }
   await win.loadURL('http://127.0.0.1:' + port + '/wechat-companion/console');
 
-  const tabs = ['home', 'persona', 'relation', 'memory', 'brain', 'nwa', 'ops'];
+  const tabs = ['home', 'persona', 'world', 'relation', 'memory', 'brain', 'nwa', 'ops'];
   const scan = `(function(){
     var bad=[];
     document.querySelectorAll('main *').forEach(function(el){
@@ -70,10 +82,32 @@ app.whenReady().then(async () => {
     }
   }
 
+  // 关键 UI 必须在「真数据」下也出现（假数据下渲染成功、真数据下被空值卡住，是另一种坑）
+  const MUST = {
+    relation: [/所有联系人/, /认识多久/],  // 备注名按钮只在真有过联系人时才出现，空态时不该要求它
+    memory: [/一键重置（危险）/, /记忆提炼接口/],
+    brain: [/向量服务地址/, /记忆引擎实际在用/],
+    nwa: [/BaseURL/, /API Key/],
+    world: [/上一月/, /下一月/, /她眼中的你（画像）/],
+    persona: [/她用 emoji 的频率/, /手滑打错字概率/],
+  };
+  const missing = [];
+  for (const t of Object.keys(MUST)) {
+    await win.webContents.executeJavaScript("try{localStorage.setItem('ctab','" + t + "');go('" + t + "');}catch(e){}");
+    await new Promise((r) => setTimeout(r, 1200));
+    // 关键：innerText 拿不到"收起"的 <details> 里的字，先全部展开再读（否则会把"折叠"误判成"缺失"）
+    await win.webContents.executeJavaScript("document.querySelectorAll('details').forEach(function(d){d.open=true});");
+    await new Promise((r) => setTimeout(r, 300));
+    const txt = await win.webContents.executeJavaScript("(function(){var m=document.querySelector('main');return m?m.innerText:'';})()");
+    for (const re of MUST[t]) if (!re.test(txt)) missing.push('[' + t + '] 缺 ' + re);
+  }
+  console.log('=== 真数据下关键界面是否都在 ===');
+  console.log(missing.length ? missing.map((x) => '  ' + x).join(String.fromCharCode(10)) : '  （都在 ✅）');
+
   console.log('=== 真前端 + 真后端：页面上的异常提示 ===');
   console.log(found.length ? found.map((f) => '  [' + f.tab + '] ' + f.where + ' → ' + f.text).join('\n') : '  （无 ✅）');
   console.log('=== 浏览器控制台报错 ===');
   console.log(errs.length ? errs.slice(0, 20).map((e) => '  ' + e).join('\n') : '  （无 ✅）');
   if (shots) console.log('截图已写入 test/preview-*.png');
-  app.exit(found.length || errs.length ? 1 : 0);
+  app.exit(found.length || errs.length || missing.length ? 1 : 0);
 });

@@ -106,10 +106,18 @@ export async function runModelTest({ role, deep = false, saved = {}, form = {}, 
       const vec = await embedText({ baseURL: conf.baseURL, apiKey: conf.apiKey, model: conf.model, input: '测试这句话的向量' });
       return done(Array.isArray(vec) && vec.length > 0, '云端出向量成功：' + (vec || []).length + ' 维', '前 5 维 ' + (vec || []).slice(0, 5).map((x) => Number(x).toFixed(3)).join(', '));
     }
-    if (role === 'chat') {
+    // 世界引擎 / 记忆提炼跟对话是同一类调用，用同一套探针（以前没接 → 后台测它们显示"未知接口"）
+    if (role === 'chat' || role === 'world' || role === 'memory') {
       if (!conf.baseURL || !conf.model) return done(false, 'BaseURL 或模型名没填', '', '填好再测。');
-      const r = await chatCompletion({ baseURL: conf.baseURL, apiKey: conf.apiKey, model: conf.model, messages: [{ role: 'user', content: '只回复两个字：在的' }], temperature: 0, maxTokens: 16 });
-      return done(!!r.content, '她的大脑回话了：' + (r.content || '').slice(0, 40), (r.usage ? 'tokens ' + JSON.stringify(r.usage) : ''));
+      // 预算给足：思考型模型（如 DeepSeek-V4-Pro）会先把 token 花在推理上，
+      // 给太少就会出现"有 usage、没内容"的假失败（用户就撞到了这个 ❌）。
+      const r = await chatCompletion({ baseURL: conf.baseURL, apiKey: conf.apiKey, model: conf.model, messages: [{ role: 'user', content: '只回复两个字：在的' }], temperature: 0, maxTokens: 512 });
+      const txt = String(r.content || '').trim();
+      const reasoning = String(r.reasoning || r.reasoning_content || '').trim();
+      const label = role === 'world' ? '世界引擎' : (role === 'memory' ? '记忆提炼' : '对话');
+      if (txt) return done(true, label + '回话：' + txt.slice(0, 40), (r.usage ? 'tokens ' + JSON.stringify(r.usage) : ''));
+      if (reasoning) return done(true, label + '能通，但它把 512 tokens 全用在"思考"上了（属于思考型模型，实际用起来要给大预算）', (r.usage ? 'tokens ' + JSON.stringify(r.usage) : ''));
+      return done(false, label + '返回了空内容', (r.usage ? 'tokens ' + JSON.stringify(r.usage) : ''), '地址/钥匙/模型名可能没错，但上游没吐内容——换个模型或稍后重试。');
     }
     if (role === 'image') {
       if (!conf.baseURL || !conf.model) return done(false, 'BaseURL 或模型名没填', '', '生图接口需要单独的模型名（如 kolors / flux）。');
@@ -150,7 +158,7 @@ export async function runModelTest({ role, deep = false, saved = {}, form = {}, 
       const hit = /红/.test(text) && /(圆|圈|点|球)/.test(text);
       return done(!!text, '她看见了：' + String(text).slice(0, 60) + (saved ? '（测试图已存 ' + saved + '）' : ''), path2hint(hit));
     }
-    return done(false, '未知接口：' + role);
+    return done(false, '这个角色还没有探针（' + role + '）——可用角色：chat / world / memory / image / vision / tts / asr / embed', '', '（后台若显示这句，说明前端传了一个后端不认的 role）');
   } catch (err) {
     const m = (err && err.message) || String(err);
     return done(false, '失败：' + m, '', hintFor(m));

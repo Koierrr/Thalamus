@@ -38,3 +38,9 @@ if (remaining.length > 7) throw new Error('清理失败，仍剩' + remaining.le
 if (!remaining.includes('2026-09-16')) throw new Error('新备份缺失');
 
 console.log('BACKUP-SMOKE ALL GREEN ✅');
+
+
+// 显式退出（2026-09-13 修）：本测试会拉起定时器 / 向量预热等后台任务，事件循环不会自己空掉
+// → 进程跑完不退出，外部看起来就是"烟测卡死"。断言失败时上面的 throw 会让进程以非 0 退出，
+// 只有全绿才会执行到这里，所以这里就是"成功退出"的唯一出口。
+process.exit(0);

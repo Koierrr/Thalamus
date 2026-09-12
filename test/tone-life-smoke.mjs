@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Life, windowOf, windowPhase, inWindowAt } from '../src/life.js';
-import { stageToneOf, proactiveLimitOf, Soul } from '../src/soul.js';
+import { stageToneOf, proactiveLimitOf, proactiveLimit, toneForToday, DEFAULT_TONE, Soul } from '../src/soul.js';
 
 let pass = 0, fail = 0;
 const ok = (c, n) => { if (c) { pass++; console.log('✅ ' + n); } else { fail++; console.log('❌ ' + n); } };
@@ -64,11 +64,22 @@ life = new Life({ dir, config: () => ({ life: { ...baseCfg.life, wake: '08:00', 
 await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(14), overrides: { stageLimit: { affection: 0, morning: false, night: false, pokes: 0, nudges: 0 } } });
 ok(sentKinds.length === 0, '亲密度 0（刚认识）：她完全不主动（' + (sentKinds.join(',') || '一条都没发') + '）');
 const st2 = JSON.parse(fs.readFileSync(path.join(dir, 'life-state.json'), 'utf8'));
-ok(st2.skipped && /关系还没到/.test(String(st2.skipped.poke || '')), '原因写明"关系还没到"：' + String(st2.skipped.poke).slice(0, 30) + '…');
+ok(st2.skipped && /按她的节奏/.test(String(st2.skipped.poke || '')), '被限流时写明原因（不再提亲密度）：' + String(st2.skipped.poke).slice(0, 40));
 
 // 熟人（20~40）：每天最多 1 条分享
 ok(proactiveLimitOf(10).pokes === 0 && proactiveLimitOf(30).pokes === 1 && proactiveLimitOf(50).pokes === 2 && proactiveLimitOf(60).pokes === 3, '主动上限随关系递增：0/1/2/3');
 ok(proactiveLimitOf(80) === null, '足够熟（≥70）→ 不再额外限制，按后台配置走');
+
+// ── 第三次改版：分寸与主动上限不再由亲密度决定，改由世界引擎的 tone 决定 ──
+const defLim = proactiveLimit(null);
+ok(defLim.morning === true && defLim.night === true && defLim.pokes === 3, '世界引擎没给分寸时：默认放开到按后台配置走（不再因刚认识就封杀）');
+const tight = proactiveLimit({ proactive: { morning: false, pokes: 1 } });
+ok(tight.morning === false && tight.pokes === 1 && tight.night === true, '世界引擎可以收紧主动（它说早上不用就不发）');
+const t1 = toneForToday({ forDate: '2026-09-13', tone: { address: '叫阿泽', chunks: 1 } }, { date: '2026-09-13' });
+ok(t1.address === '叫阿泽' && t1.source === 'world', '今天有效的分寸 → 用世界引擎给的');
+const t2 = toneForToday({ forDate: '2026-09-12', tone: { address: '旧的' } }, { date: '2026-09-13' });
+ok(t2.source === 'default' && !/旧的/.test(t2.address), '世界引擎给的分寸过期 → 自动作废回默认（不会拿昨天的分寸说今天的话）');
+ok(DEFAULT_TONE.forbid.length > 0, '默认分寸也带边界（别太热络/别撒娇）');
 
 // ── ④ 分寸表：刚认识必须"客气、不撒娇、不叫昵称" ──
 const t0 = stageToneOf(0), t90 = stageToneOf(90);
@@ -86,7 +97,8 @@ const sys = soul._systemPrompt({
 });
 ok(!/【主人】/.test(sys) && !/对方是【主人】/.test(sys), '提示词里不再有"【主人】"这个角色标签');
 ok(/绝对不要叫他「主人」/.test(sys), '明确禁止她叫"主人/老公/亲爱的"');
-ok(/【今天的分寸/.test(sys) && /刚认识/.test(sys), '提示词里带了"今天的分寸"（兜底表：刚认识）');
+ok(/【今天的分寸/.test(sys) && /世界引擎还没给过分寸/.test(sys), '提示词里带了「今天的分寸」（世界引擎没给 → 用默认分寸，并写明来历）');
+ok(!/亲密度/.test(sys), '提示词里不再出现「亲密度」（数值化退场）');
 ok(/14:00（下午）/.test(sys), '时间用 24 小时制 + 中文时段告诉了她：14:00（下午）');
 ok(/下午不要说早安/.test(sys), '并明确提醒她"下午不要说早安"');
 ok(/INTJ/.test(sys) && /依恋强度/.test(sys), 'INTJ 与六维仍在提示词里（性格锚点没丢）');
@@ -118,11 +130,11 @@ ok(twoChunks[1] > short[0], '越长的消息等得越久（按字数算，不再
 ok(soulP._planDelays(['x'.repeat(200)], true, 'human', 1)[1] === undefined && soulP._planDelays(['x'.repeat(200), 'y'], true, 'human', 1)[1] <= 12000, '单条等待有上限（≤12 秒），不会等到天荒地老');
 const fast = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'instant', 1);
 const slow = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'slow', 1);
-ok(fast[0] < 1000 && slow[0] > 3000, '回复速度三档真的有区别（instant ' + fast[0] + 'ms / slow ' + slow[0] + 'ms）');
+ok(fast[0] < slow[0] * 0.6, '回复速度三档真的有区别（instant ' + fast[0] + 'ms / slow ' + slow[0] + 'ms）');
 
 const planIntj = soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, null, 0);
 const planWarm = soulP._talkPlan({ traits: { initiative: 80, warmth: 85 } }, null, 60);
-ok(planIntj.maxChunks === 1 && planIntj.maxChars <= 20, 'INTJ 型（温度/发起力低）话很少：最多 ' + planIntj.maxChunks + ' 条 / ' + planIntj.maxChars + ' 字');
+ok(planIntj.maxChunks <= 2 && planIntj.maxChars <= 32, 'INTJ 型（温度/发起力低）话不多：最多 ' + planIntj.maxChunks + ' 条 / ' + planIntj.maxChars + ' 字');
 ok(planWarm.maxChunks >= 3 && planWarm.maxChars > planIntj.maxChars, '外向热情型可以说更多（' + planWarm.maxChunks + ' 条 / ' + planWarm.maxChars + ' 字）');
 ok(soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, { chunks: 3, maxChars: 50 }, 30).maxChunks === 3, '世界引擎给的话量可以覆盖性格默认值');
 // 提示词里必须写清"最多几条/每条几个字"，否则模型还是会长篇大论
@@ -131,9 +143,39 @@ const sysTalk = soulP._systemPrompt({
   rel: { affection: 0, chats: 0, mood: 50 }, isOwner: true, memories: [], now: at(14), behavior: {},
   today: { date: '2026-09-14' }, world: null, talkPlan: planIntj,
 });
-ok(/这条最多 1 条消息、每条不超过 16 个字/.test(sysTalk), '提示词里写明了话量上限（防话唠）');
+ok(/这条最多 \d+ 条消息、每条不超过 \d+ 个字/.test(sysTalk), '提示词里写明了话量上限（防话唠）');
 ok(/严禁客服腔|AI腔/.test(sysTalk), '提示词里禁止客服腔/AI腔');
 ok(/不要主动延伸|能一个字解决/.test(sysTalk), '提示词里要求"有事说事、不主动延伸"');
+
+// ── ⑦ 称呼：专属昵称真的生效 + 「他是谁」已退场（2026-09-13 改）──
+// 黑盒修复：以前「专属昵称」只在"关系阶段跃迁"时才进提示词，而阶段已经退场 → 填了等于没填。
+const sysPet = soulP._systemPrompt({
+  persona: { name: '苏镜语', traits: {}, quirks: {}, interests: [], assessments: {}, relationship: { callOwner: '阿泽' } },
+  rel: { chats: 12, mood: 60 }, isOwner: true, memories: [], now: at(14), behavior: {},
+  today: { date: '2026-09-14' }, world: null,
+});
+ok(/阿泽/.test(sysPet), '「专属昵称」会进她的提示词（以前填了等于没填）');
+ok(/熟度够/.test(sysPet), '并写明：熟度够才这么叫，不够就按分寸的叫法（不越界）');
+const sysLock = soulP._systemPrompt({
+  persona: { name: '苏镜语', traits: {}, quirks: {}, interests: [], assessments: {}, relationship: { callOwner: '阿泽', callLock: true } },
+  rel: { chats: 12, mood: 60 }, isOwner: true, memories: [], now: at(14), behavior: {},
+  today: { date: '2026-09-14' }, world: null,
+});
+ok(/认定要叫他「阿泽」/.test(sysLock), '勾了「锁定称呼」→ 不管分寸多客气都用这个叫法');
+// 「他是谁」已退场（2026-09-13 用户拍板：她从零认识你，认知全部来自记忆）
+const sysNoWho = soulP._systemPrompt({
+  persona: { name: '苏镜语', traits: {}, quirks: {}, interests: [], assessments: {}, relationship: {} },
+  rel: { chats: 0, mood: 50 }, isOwner: true, memories: [], now: at(14), behavior: {},
+  today: { date: '2026-09-14' }, world: null,
+  ownerProfile: { name: '阿泽', basic: '杭州，做后端开发，经常加班；不喝咖啡，喜欢猫。' },
+});
+ok(!/关于他/.test(sysNoWho) && !/别装不认识/.test(sysNoWho), '「他是谁」已退场：即使传了 ownerProfile 也不再进提示词');
+const fastD = soulP._planDelays(['x'.repeat(20), 'y'.repeat(20)], true, 'human', 1, 2);
+const slowD = soulP._planDelays(['x'.repeat(20), 'y'.repeat(20)], true, 'human', 1, 0.5);
+ok(fastD[0] < slowD[0] && fastD[1] < slowD[1], '手速倍率真的生效（×2 → ' + fastD[1] + 'ms ／ ×0.5 → ' + slowD[1] + 'ms）');
+const d30 = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'human', 1, 1)[1];
+ok(d30 < 4500, '默认手速下 30 字等待 <4.5 秒（实测 ' + d30 + 'ms；旧版要 5.5 秒以上）');
+ok(soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, null, 62).maxChars >= 28, 'INTJ 的话量放宽到至少 28 字（不再憋成半句）');
 
 console.log(fail === 0 ? '\nTONE-LIFE ALL GREEN ✅  ' + pass + ' 项' : '\nTONE-LIFE 有失败 ❌ ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

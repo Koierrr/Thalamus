@@ -81,7 +81,45 @@ export const STAGE_TONE = {
   },
 };
 
-/** 按亲密度取分寸（兜底） */
+/**
+ * 默认分寸（2026-09-13 第三次改版：亲密度/关系阶段退场）
+ * 不再按亲密度分档——世界引擎没给过分寸时，就用这套"与关系无关"的自然默认。
+ */
+export const DEFAULT_TONE = {
+  intimacy: null,
+  address: '用名字（或「哎」），不叫昵称',
+  style: '自然、直接、话不多，有事说事',
+  chunks: 2,
+  maxChars: 30,
+  forbid: ['别太热络', '别撒娇'],
+  reason: '世界引擎还没给过分寸，先用默认',
+};
+
+/** 取"今天有效"的分寸：只有世界引擎给自己的 forDate 等于今天才算数，否则用默认 */
+export function toneForToday(world, today) {
+  const w = world || {};
+  const t = w.tone;
+  if (t && w.forDate && today && w.forDate === today.date) return { ...DEFAULT_TONE, ...t, source: 'world' };
+  return { ...DEFAULT_TONE, source: 'default' };
+}
+
+/** 主动消息上限：默认放开到"按后台配置走"，世界引擎可用 tone.proactive 收紧 */
+export function proactiveLimit(worldTone) {
+  const base = { morning: true, night: true, pokes: 3, nudges: 3 };
+  const p = worldTone && worldTone.proactive;
+  if (p && typeof p === 'object') {
+    return {
+      ...base,
+      morning: p.morning !== false,
+      night: p.night !== false,
+      pokes: Number.isFinite(Number(p.pokes)) ? Math.max(0, Math.round(Number(p.pokes))) : base.pokes,
+      nudges: Number.isFinite(Number(p.nudges)) ? Math.max(0, Math.round(Number(p.nudges))) : base.nudges,
+    };
+  }
+  return base;
+}
+
+/** @deprecated 亲密度分档（第三次改版后不再使用，仅为兼容旧测试保留） */
 export function stageToneOf(affection) {
   const table = STAGES;
   let st = table[0];
@@ -235,6 +273,9 @@ export class Soul {
       // 双向记忆开关（记忆组要整体带出来，否则下游读不到 → 曾经的"设置静默失效"）
       memory: m,
       selfMemory: m.selfMemory !== false,
+      // 「他是谁」档案已退场（2026-09-13 用户拍板）：不再带 owner
+      talkiness: (typeof b.talkiness === 'number' && isFinite(b.talkiness)) ? Math.max(0, Math.min(100, b.talkiness)) : null,
+      speedMul: Math.max(0.5, Math.min(2.5, Number(b.speedMul) || 1)),
     };
   }
 
@@ -362,7 +403,8 @@ export class Soul {
 
   getRelation(peerKey, isOwner) {
     const all = this.getRelations();
-    return all[peerKey] || { affection: isOwner ? 60 : 20, firstSeen: Date.now(), lastSeen: 0, mood: 60, chats: 0 };
+    // 第三次改版：亲密度退场（不再有分数与阶段），只留「处过多久、聊过多少、当前心情」
+    return all[peerKey] || { firstSeen: Date.now(), lastSeen: 0, mood: 60, chats: 0 };
   }
 
   _saveRelation(peerKey, patch) {
@@ -370,6 +412,23 @@ export class Soul {
     all[peerKey] = { ...this.getRelation(peerKey), ...patch, lastSeen: Date.now() };
     writeJson(this.relationsFile(), all);
     return all[peerKey];
+  }
+
+  /**
+   * 备注名（2026-09-13 第三次改版）：给一个联系人起个好记的名字。
+   * 只做后台显示——不改她的记忆、不改她聊天时怎么称呼对方（用户拍板：只给你看）。
+   * 传空字符串 = 清掉备注名，回到"后 6 位"的兜底显示。
+   */
+  setRelationName(peerKey, name) {
+    const key = String(peerKey || '').trim();
+    if (!key) throw new Error('缺少联系人 ID');
+    const nm = String(name == null ? '' : name).trim().slice(0, 20);
+    const all = this.getRelations();
+    const cur = all[key] || { firstSeen: Date.now(), lastSeen: 0, mood: 60, chats: 0 };
+    if (nm) cur.name = nm; else delete cur.name;
+    all[key] = cur;
+    writeJson(this.relationsFile(), all);
+    return { key, name: nm };
   }
 
   affectionTitle(affection, isOwner) {
@@ -412,7 +471,17 @@ export class Soul {
   // ---------- 存储层 A：本地 JSON 记忆（兜底引擎 + 迁移源） ----------
   memoryFile() { return path.join(this.dir, 'memory.json'); }
 
-  getMemories() { return readJson(this.memoryFile(), { entries: [], todos: [] }); }
+  getMemories() {
+    // 容错（2026-09-12 事故）：记忆文件曾经被写成裸数组 []，于是下面所有 mem.entries.filter 直接抛
+    // "mem.entries.filter is not a function"，她连回话都回不了。这里统一规整成 {entries:[],todos:[]}。
+    const raw = readJson(this.memoryFile(), null);
+    if (Array.isArray(raw)) return { entries: raw, todos: [] };
+    if (!raw || typeof raw !== 'object') return { entries: [], todos: [] };
+    return {
+      entries: Array.isArray(raw.entries) ? raw.entries : [],
+      todos: Array.isArray(raw.todos) ? raw.todos : [],
+    };
+  }
 
   _jsonAdd(item = {}) {
     const mem = this.getMemories();
@@ -478,6 +547,17 @@ export class Soul {
   // ---------- 存储层 B：统一入口（mem0 优先，JSON 兜底，UI 无感） ----------
 
   /** 后台记忆页的数据视图：带引擎标识 */
+  /** 记忆归属（第三次改版）：关于我 / 关于她 / 我们之间 —— 替掉界面上那串乱码 ID */
+  catOf(e = {}) {
+    const md = e.metadata || {};
+    if (md.cat === 'us' || md.cat === 'her' || md.cat === 'you') return md.cat;
+    const src = String(md.source || e.source || '');
+    if (src === 'self' || src === 'life' || e.who === 'self') return 'her';
+    return 'you';
+  }
+
+  catLabel(cat) { return cat === 'her' ? '关于她' : (cat === 'us' ? '我们之间' : '关于我'); }
+
   async memoriesView() {
     if (await this.engineUp()) {
       try {
@@ -492,13 +572,16 @@ export class Soul {
           source: (e.metadata && e.metadata.source) || '',
           pinned: !!(meta[e.id] && meta[e.id].pinned),
           ts: e.ts || Date.now(),
+          cat: this.catOf(e),
+          catLabel: this.catLabel(this.catOf(e)),
         }));
         return { engine: 'mem0', info: this.engineInfo(), entries, legacyCount: (this.getMemories().entries || []).length };
       } catch (err) {
         this.log('[soul] mem0 列表失败，显示本地数据: ' + (err && err.message));
       }
     }
-    return { engine: 'local', info: null, entries: this.getMemories().entries };
+    const local = (this.getMemories().entries || []).map((e) => ({ ...e, cat: this.catOf(e), catLabel: this.catLabel(this.catOf(e)) }));
+    return { engine: 'local', info: null, entries: local };
   }
 
   /** 手动记一条 */
@@ -682,13 +765,19 @@ export class Soul {
     const peerKey = item.peerKey;
     const isOwner = !!item.isOwner;
     const persona = this.getPersona();
-    const rel = this.getRelation(peerKey, isOwner);
+    let rel = this.getRelation(peerKey, isOwner);
     const b = this._behavior();
     const incoming = String(item.text || '');
     // 省 token：平时只带 ~100 token 自我认知小卡；聊到能力/身份话题才注入完整功能清单
     const needFull = CAPABILITY_KEYWORDS.some((k) => incoming.includes(k));
     const memories = await this._retrieveHybrid(incoming, peerKey);
     const today = item.today || null;
+    // 第三次改版：心情 = 世界引擎给的"今天基准" + 之后聊天在它上面浮动（只保留一个值，不再两处打架）
+    if (today && today.date && rel.moodDate !== today.date && typeof today.mood === 'number') {
+      try {
+        rel = this._saveRelation(peerKey, { mood: Math.max(0, Math.min(100, Math.round(today.mood))), moodDate: today.date });
+      } catch (err) { this.log('[soul] 心情播种失败: ' + (err && err.message)); }
+    }
     const deformInfo = this.deform ? this.deform.info() : null;
     // 变形状态必须在生成回复【之前】注入，否则她永远"变不了形"
     let recoveredThisTurn = false;
@@ -701,10 +790,10 @@ export class Soul {
     const portrait = item.portrait || (world && world.portrait) || '';
     const now = new Date();
     // 分寸与话量：世界引擎昨晚判断过（且是"今天"那份）就用它，否则用内置阶段兜底表
-    const ruleTone = stageToneOf(rel.affection);
+    const ruleTone = toneForToday(world, today);
     const wt = (world && world.tone && world.forDate && today && world.forDate === today.date) ? world.tone : null;
     const tone = wt ? { ...ruleTone, ...wt, source: 'world' } : { ...ruleTone, source: 'rule' };
-    const talkPlan = this._talkPlan(persona, tone, this.stageOf(rel.affection).min);
+    const talkPlan = this._talkPlan({ ...persona, behavior: { ...(persona.behavior || {}), talkiness: (b.talkiness == null ? undefined : b.talkiness) } }, tone, 0);
     const sys = this._systemPrompt({ persona, rel, isOwner, memories, now, mediaCount: item.mediaCount || 0, behavior: b, extraCard: needFull ? featureSummaryForSoul() : '', today, deformInfo, deformLine, world, portrait, tone, talkPlan });
     const history = this.getHistory(peerKey).slice(-b.contextRounds)
       .map((m) => ({ role: m.role === 'her' ? 'assistant' : 'user', content: m.text }));
@@ -719,10 +808,14 @@ export class Soul {
     chunks = chunks.map((c) => (c.length <= talkPlan.maxChars ? c : (c.slice(0, talkPlan.maxChars).replace(/[，,、；;：:][^，,、；;：:]*$/, '') + '…')));
     if (!chunks.length) chunks = [String(r.content || '').slice(0, talkPlan.maxChars)];
     const voiceRate = item.voiceRate !== undefined ? Number(item.voiceRate) || 0 : b.voiceRate;
-    const voice = voiceRate > 0 && Math.random() < voiceRate && (chunks[0] || '').length <= 160;
+    // 语音条只发"短回复"：判断要看**整条回复**，不能只看第一小条——
+    // 以前写的是 chunks[0].length，结果一条 200 字的长回复被拆成几条后，
+    // 第一小条不到 160 字就照样发语音条，等于"长文本不该发语音"这条规则是假的（voice-smoke 抓到的）。
+    const wholeReply = String(r.content || '');
+    const voice = voiceRate > 0 && Math.random() < voiceRate && wholeReply.length <= 160 && (chunks[0] || '').length <= 160;
     const moodLabel = rel.mood >= 70 ? '不错' : rel.mood >= 40 ? '平静' : '有点低落';
-    const thought = (memories.length ? '想起：' + memories.slice(0, 2).map((m) => m.text.slice(0, 30)).join('；') + '。' : '') + '心情' + moodLabel + '，亲密度' + Math.round(rel.affection);
-    const speedMul = today && today.speedState ? today.speedState : 1;
+    const thought = (memories.length ? '想起：' + memories.slice(0, 2).map((m) => m.text.slice(0, 30)).join('；') + '。' : '') + '心情' + moodLabel ;
+    const speedMul = (today && today.speedState ? today.speedState : 1) * (b.speedMul || 1);
     return {
       chunks, delaysMs: this._planDelays(chunks, isOwner, b.replySpeed, speedMul), talkPlan,
       mood: rel.mood, backend: r.backend, voice, thought,
@@ -780,26 +873,28 @@ export class Soul {
     const partOfDay = h24 < 5 ? '凌晨' : h24 < 8 ? '早上' : h24 < 11 ? '上午' : h24 < 13 ? '中午' : h24 < 17 ? '下午' : h24 < 19 ? '傍晚' : h24 < 23 ? '晚上' : '深夜';
     const timeText = hh + ':' + mi + '（' + partOfDay + '）';
     const RC = persona.relationship || {};
-    const stageNow = this.stageOf(rel.affection);
     const petName = String(RC.callOwner || '').trim();
     // 分寸：世界引擎昨晚综合判断过就用它（info.tone），否则用代码里的兜底表。
     // 注意：提示词里**不能**把这个角色叫「主人」——那个词会让模型自动演"管家式女友"，
     // 和"刚认识"以及"INTJ 这种冷淡性格"直接冲突。这里统一称"他/对面"。
-    const ruleTone = stageToneOf(rel.affection);
+    const ruleTone = toneForToday(info.world, info.today);
     const wt = (info.world && info.world.tone && info.today && info.world.forDate && info.world.forDate === info.today.date) ? info.world.tone : null;
     const tone = info.tone ? info.tone : (wt ? { ...ruleTone, ...wt, source: 'world' } : { ...ruleTone, source: 'rule' });
     let ownerDesc;
     if (RC.callLock && petName) {
-      ownerDesc = '对面是你在意的人。你平时叫他「' + petName + '」（你们定下的固定称呼，任何阶段都这么叫）。';
+      // 锁死称呼：不管分寸多冷淡，都用这个叫法（后台勾了"锁定称呼"）
+      ownerDesc = '对面是你在意的人。今天该多熟按下面【今天的分寸】来；但称呼上你已经认定要叫他「' + petName + '」——不管分寸要求多客气，都用这个叫法。';
     } else {
-      // 纯自动演变：阶段 + 分寸表决定称呼方式；专属昵称到恋人阶段才自然出口，暧昧期偶尔试探
-      ownerDesc = '对面是你在意的人。你们的关系由亲密度自然演进，现在是「' + stageNow.label + '」阶段——称呼上：' + (tone.address || stageNow.callHint) + '。' +
-        (petName && stageNow.min >= 85 ? '你们已经是恋人，你平时就叫他「' + petName + '」。' : '') +
-        (petName && stageNow.min >= 70 && stageNow.min < 85 ? '你心里已经想好以后叫他「' + petName + '」，偶尔半开玩笑地试探着叫。' : '');
+      ownerDesc = '对面是你在意的人。今天该多熟、怎么称呼，都按下面【今天的分寸】来——称呼上：' + (tone.address || '按分寸自己拿捏') + '。';
+      // 专属昵称（2026-09-13 修）：以前它只在"关系阶段"跃迁时才生效，而阶段已经退场 → 填了等于没填。
+      // 现在改成"她心里知道他叫什么"，能不能叫出口由世界引擎的分寸决定——既不黑盒，也不越过分寸。
+      if (petName) {
+        ownerDesc += '你心里给他起的名字是「' + petName + '」：今天熟度够（约 70/100 以上）就自然这么叫他；不够就先用分寸要求的叫法，别硬叫、别为此解释。';
+      }
     }
     ownerDesc += '绝对不要叫他「主人」「老公」「亲爱的」这类称呼，除非上面的称呼要求里明确写了。';
     // 今天的分寸（"不崩人设"的关键：关系多深就表现多熟；宁可冷淡也别越界）
-    ownerDesc += '\n【今天的分寸（非常重要，宁可冷淡一点也别越界）】现在亲密度 ' + Math.round(rel.affection) + '/100，'
+    ownerDesc += '\n【今天的分寸（非常重要，宁可冷淡一点也别越界）】'
       + '你今天该表现的熟度约 ' + Math.round(tone.intimacy == null ? 10 : tone.intimacy) + '/100。语气：' + (tone.style || '')
       + ((tone.forbid && tone.forbid.length) ? ('；今天绝对不要：' + tone.forbid.join('、') + '。') : '。')
       + (tone.reason ? ('（分寸由来：' + tone.reason + '）') : '');
@@ -811,8 +906,8 @@ export class Soul {
       ownerDesc += '【今天有件小事】你刚刚决定让大家（包括他）改叫你「' + myName + '」。这次回复里自然地提一句（像"以后叫我' + myName + '吧"），只说一次，别解释原因、别说这是决定。';
     }
     if (RC.toOwner) ownerDesc += '你心里对这段关系的定位是「' + RC.toOwner + '」——按这个定位拿捏分寸（别越界，也别太生分）。';
-    ownerDesc += '亲密度 ' + Math.round(rel.affection) + '/100（' + this.affectionTitle(rel.affection, true) + '），已聊 ' + (rel.chats || 0) + ' 次。';
-    const who = info.isOwner ? ownerDesc : ('对方是普通联系人，亲密度 ' + Math.round(rel.affection) + '/100。');
+    ownerDesc += '已聊 ' + (rel.chats || 0) + ' 次。';
+    const who = info.isOwner ? ownerDesc : '对方是普通联系人。';
     // 「改称呼」这件事说一次就够：提示词已经写进去了，这里立刻消费掉，避免每条消息都提
     if (info.isOwner && RC.announceName) { try { this.updateRelationship({ announceName: false }); } catch {} }
     // 双向记忆：她自己的话（source/who=self）与"别人的事"分开注入——
@@ -878,7 +973,7 @@ export class Soul {
       '【性格】' + Object.keys(TRAIT_HINT).map((k) => dim(p[k], k)).filter(Boolean).join('；'),
       '【兴趣】' + (persona.interests || []).join('、'),
       ...assessLines,
-      info.today && typeof info.today.mood === 'number' && info.today.mood <= 35 ? '【今天心情】有点低落——想起的事都带点刺，语气自然低一些，不硬拗开心。' : (info.today && info.today.mood >= 75 ? '【今天心情】很好——语气轻快，主动抛话题。' : ''),
+      info.today && typeof info.today.mood === 'number' && rel.mood <= 35 ? '【今天心情】有点低落——想起的事都带点刺，语气自然低一些，不硬拗开心。' : (info.today && info.today.mood >= 75 ? '【今天心情】很好——语气轻快，主动抛话题。' : ''),
       info.today && info.today.focus ? '【今日痴迷】' + info.today.focus + '——今天聊天更容易扯到这个。' : '',
       ...worldLines,
       (info.ownerLines && info.ownerLines.length) ? '【他的说法（可以自然借用他的用词和梗）】' + info.ownerLines.join(' / ').slice(0, 160) : '',
@@ -917,6 +1012,9 @@ export class Soul {
       this._featuresGet ? this._featuresGet() : '',
       info.extraCard || '',
       info.deformLine || '',
+      // 夜间三态（第三次改版）：准备睡 / 昨晚睡着了，都要如实体现在说话方式上
+      info.nightPhase === 'preparing' ? '【你已经说了晚安（正躺床上刷手机）】说话更短更慢、可以打哈欠、可以用"嗯""我眯了""你怎么还不睡"这类；不要开新话题、不要长篇、不用表情包。' : '',
+      info.morningCatchup ? '【昨晚你睡着了】这次回复的开头自然带一句"昨晚你后来发什么了？我断片了"（口语、别扭一点，别像客服道歉）。' : '',
       '',
       '现在直接输出你要发送的微信内容本身（不要任何前缀、引号或解释）。',
     ].filter((s) => s !== '');
@@ -955,14 +1053,18 @@ export class Soul {
    * replySpeed：instant（秒回型）/ human（默认）/ slow（慢性子）；mul 是当天速度系数。
    * 参数传数组（chunks）最好——能按每条的字数算；传数字也兼容（退回固定时长）。
    */
-  _planDelays(chunks, isOwner, speed, mul) {
+  _planDelays(chunks, isOwner, speed, mul, speedMul) {
     const list = Array.isArray(chunks) ? chunks.map((c) => String(c || '')) : null;
     const count = list ? list.length : Math.max(1, Number(chunks) || 1);
     const s = speed || 'human';
-    const m = Number(mul) || 1;
-    const CHAR_MS = s === 'instant' ? 45 : s === 'slow' ? 260 : 150;      // 每个字的"打字"时间
-    const THINK = s === 'instant' ? [200, 800] : s === 'slow' ? [4000, 9000] : [1500, 4800];
-    const GAP = s === 'instant' ? [120, 350] : s === 'slow' ? [1200, 2600] : [450, 1300];
+    // mul = 当天速度系数；speedMul = 后台「手速」倍率（越大越快：1.5 = 快 50%）
+    const fast = Math.max(0.5, Math.min(2.5, Number(speedMul) || 1));
+    const m = (Number(mul) || 1) / fast;
+    // 2026-09-12 二调：上一版太慢（用户反馈"打字又太慢了"）——中文打字按 95ms/字 ≈ 10 字/秒，
+    // 思考时间收到 0.9~2.6 秒；另外支持后台「手速」倍率（behavior.speedMul，0.5~2）。
+    const CHAR_MS = s === 'instant' ? 35 : s === 'slow' ? 190 : 95;
+    const THINK = s === 'instant' ? [150, 600] : s === 'slow' ? [2500, 6000] : [900, 2600];
+    const GAP = s === 'instant' ? [100, 300] : s === 'slow' ? [900, 2000] : [300, 900];
     const rnd = (a, b) => a + Math.random() * (b - a);
     const delays = [];
     // 第一条：反应时间（她在忙/在打字，所以先等一下）
@@ -982,12 +1084,15 @@ export class Soul {
    */
   _talkPlan(persona = {}, tone = null, stageMin = 0) {
     const T = persona.traits || {};
-    const avg = (((T.initiative == null ? 50 : T.initiative) + (T.warmth == null ? 50 : T.warmth)) / 2);
-    let plan = avg < 35 ? { maxChunks: 1, maxChars: 16 }
-      : avg < 52 ? { maxChunks: 2, maxChars: 26 }
-        : avg < 72 ? { maxChunks: 3, maxChars: 42 }
+    // 「她怎么说话」里的"话多↔话少"滑杆优先（0~100）；没设才按性格推
+    const knob = (persona.behavior || {}).talkiness;
+    const byTrait = (((T.initiative == null ? 50 : T.initiative) + (T.warmth == null ? 50 : T.warmth)) / 2);
+    const avg = (typeof knob === 'number' && isFinite(knob)) ? Math.max(0, Math.min(100, knob)) : byTrait;
+    let plan = avg < 35 ? { maxChunks: 2, maxChars: 30 }
+      : avg < 52 ? { maxChunks: 2, maxChars: 38 }
+        : avg < 72 ? { maxChunks: 3, maxChars: 48 }
           : { maxChunks: 4, maxChars: 60 };
-    if (stageMin < 20) plan = { maxChunks: Math.min(plan.maxChunks, 2), maxChars: Math.min(plan.maxChars, 24) }; // 刚认识：话更少
+    if (stageMin < 20) plan = { maxChunks: Math.min(plan.maxChunks, 2), maxChars: Math.min(plan.maxChars, 30) }; // 刚认识：收敛一点
     if (tone && Number.isFinite(tone.chunks)) plan.maxChunks = Math.max(1, Math.min(5, Math.round(tone.chunks)));
     if (tone && Number.isFinite(tone.maxChars)) plan.maxChars = Math.max(8, Math.min(120, Math.round(tone.maxChars)));
     return plan;
@@ -1018,18 +1123,16 @@ export class Soul {
     const rude = /滚|蠢|闭嘴|垃圾/.test(userText);
     // 演化计数器：只统计主人对她的互动（世界引擎每周结算时用）
     if (isOwner) this.bumpEvolution({ chats: 1, warm: warm ? 1 : 0, rude: rude ? 1 : 0 });
-    const affectionDelta = isOwner ? (warm ? 0.6 : rude ? -1.2 : 0.15) : (rude ? -0.8 : 0.05);
     const moodDelta = rude ? -6 : warm ? 4 : 0.5;
-    const newAffection = Math.max(0, Math.min(100, rel.affection + affectionDelta));
+    // 第三次改版：亲密度不再累积（关系深浅改由世界引擎判断）
     this._saveRelation(peerKey, {
-      affection: newAffection,
       mood: Math.max(0, Math.min(100, rel.mood + moodDelta)),
       chats: (rel.chats || 0) + 1,
     });
 
     // 关系阶段跃迁检测（里程碑）
     if (isOwner) {
-      const jump = this.detectStageJump(peerKey, rel.affection, newAffection, isOwner);
+      const jump = null; // 第三次改版：阶段跃迁退场（称呼由世界引擎的分寸决定）
       if (jump) {
         this.log('[soul] 关系阶段跃迁: ' + jump);
         this.activity && this.activity('[关系] ' + jump);
@@ -1076,7 +1179,7 @@ export class Soul {
         r = await chatCompletion({
           baseURL: c.baseURL, apiKey: c.apiKey, model: b.extractionModel,
           messages: [
-            { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数,"tags":["标签"],"todo":{"due":"YYYY-MM-DD","text":"待办内容"}或null}。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。没有值得记的输出[]。' },
+            { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数,"tags":["标签"],"todo":{"due":"YYYY-MM-DD","text":"待办内容"}或null}。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。**一律用中文写**（只有对方/她原话本身就是英文时才保留英文）。没有值得记的输出[]。' },
             { role: 'user', content: '【谁在说话】' + (isOwner ? '你在意的人' : '普通联系人') + ' ' + peerKey + '\n【对话】\n' + dialogue },
           ],
           temperature: 0.2, maxTokens: 400,
@@ -1084,7 +1187,7 @@ export class Soul {
         r = { content: r.content };
       } else {
         r = await this.router.chat([
-          { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数,"tags":["标签"],"todo":{"due":"YYYY-MM-DD","text":"待办内容"}或null}。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。没有值得记的输出[]。' },
+          { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数,"tags":["标签"],"todo":{"due":"YYYY-MM-DD","text":"待办内容"}或null}。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。**一律用中文写**（只有对方/她原话本身就是英文时才保留英文）。没有值得记的输出[]。' },
           { role: 'user', content: '【谁在说话】' + (isOwner ? '你在意的人' : '普通联系人') + ' ' + peerKey + '\n【对话】\n' + dialogue },
         ], { temperature: 0.2, maxTokens: 400 });
       }
@@ -1120,7 +1223,7 @@ export class Soul {
     // 于是最容易说错话（下午说晚安、刚认识就叫主人）。现在把"今天的她/她的世界/画像"都带上。
     const today = extra.today || null;
     const world = extra.world || null;
-    const sys = this._systemPrompt({ persona, rel, isOwner: true, memories, now, mediaCount: 0, behavior: b, today, world, portrait: (world && world.portrait) || '' });
+    const sys = this._systemPrompt({ persona, rel, isOwner: true, memories, now, mediaCount: 0, behavior: b, today, world, portrait: (world && world.portrait) || ''  });
     const tasks = {
       morning: '你刚醒来不久（现在是【此刻】里的时间）。给对面发一条早安消息：1~2 句话，按你和 TA 的关系分寸来——刚认识就客气简短，熟了才随意。',
       night: '你现在准备睡了（时间是【此刻】里的晚上/深夜，不是白天）。发一条晚安消息：1~2 句话，同样按关系分寸来；刚认识就简单说一句，不要亲昵称呼、不要撒娇。',

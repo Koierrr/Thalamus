@@ -85,6 +85,7 @@ export class Life {
       sleep: c.sleep || '23:30',
       morningOn: c.morningOn !== false,
       nightOn: c.nightOn !== false,
+      insomnia: c.insomnia === true,   // 今晚失不失眠（世界引擎写，决定她说了晚安后还醒多久）
       pokesPerDay: Number(c.pokesPerDay) || 2,
       pokeWindow: Array.isArray(c.pokeWindow) && c.pokeWindow.length === 2 ? c.pokeWindow : ['10:00', '22:00'],
       nudgeMinutes: Number(c.nudgeMinutes) || 20,
@@ -112,6 +113,48 @@ export class Life {
     return (h % (2 * minutes + 1)) - minutes;
   }
 
+  /**
+   * 夜间三态（第三次改版）：清醒 → 准备睡（说了晚安，还在刷手机）→ 真睡着
+   * 她说了晚安≠立刻睡：收拾/刷手机/失眠都可能拖很久。多久真睡着由世界引擎的 insomnia 决定。
+   */
+  /** 算出"就寝三态"的字段（纯函数，不存盘——由调用方一起保存，避免被同 tick 的后续保存覆盖） */
+  bedtimeFields(now, cfg = {}) {
+    const t = (now instanceof Date ? now : new Date()).getTime();
+    const insomnia = cfg.insomnia === true;
+    const lo = insomnia ? 60 : 15;
+    const hi = insomnia ? 120 : 45;
+    const dur = Math.round((lo + Math.random() * (hi - lo)) * 60000);
+    return { bedPhase: 'preparing', bedAt: t, bedDue: t + dur, bedInsomnia: insomnia };
+  }
+
+  /** 当前夜间状态：awake / preparing / asleep（每次 tick 或读取时自动推进） */
+  nightPhase(now) {
+    const t = (now instanceof Date ? now : new Date()).getTime();
+    const s = this._state();
+    if (s.bedPhase === 'preparing' && s.bedDue && t >= s.bedDue) {
+      s.bedPhase = 'asleep';
+      this._save(s);
+    }
+    return s.bedPhase || 'awake';
+  }
+
+  /** 她睡着时你来消息了：记一笔，第二天早上她会自己提（"昨晚我断片了"） */
+  markSleptThrough() {
+    const s = this._state();
+    s.morningCatchup = true;
+    this._save(s);
+    return true;
+  }
+
+  /** 取一次"昨晚断片"提示（只给一次） */
+  consumeMorningCatchup() {
+    const s = this._state();
+    if (!s.morningCatchup) return false;
+    s.morningCatchup = false;
+    this._save(s);
+    return true;
+  }
+
   _inWindow(now, w) {
     const cur = now.getHours() * 60 + now.getMinutes();
     const A = hm(w[0]); const B = hm(w[1]);
@@ -130,6 +173,15 @@ export class Life {
    * 心跳：每次调用检查所有触发。now 可注入（测试用）。
    * 返回实际发出的消息列表 [{kind, text}]。
    */
+  /** 解析世界引擎给的"明天大概什么时候想找他"（如 16:00 前后 / 通勤路上 17:30）→ 分钟数；没有就 null */
+  _parseProactiveAt(txt) {
+    const m = /(\d{1,2}):(\d{2})/.exec(String(txt || ''));
+    if (!m) return null;
+    const h = Number(m[1]); const mi = Number(m[2]);
+    if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+    return h * 60 + mi;
+  }
+
   async tick(args = {}) {
     const soul = args.soul;
     const sendToOwner = args.sendToOwner;
@@ -141,6 +193,7 @@ export class Life {
     const s = this._state();
     if (s.date !== dayKey(now)) {
       s.date = dayKey(now); s.morning = false; s.night = false; s.pokes = 0; s.nudges = 0;
+      s.bedPhase = 'awake'; s.bedAt = 0; s.bedDue = 0;
       s.backupDone = false; delete s.pendingSince; s.skipped = {}; delete s.claimedPokesOff;
     }
 
@@ -177,7 +230,7 @@ export class Life {
       }
     } else if (!allowMorning && !s.morning) {
       s.morning = true;
-      skip('morning', '关系还没到' + '（亲密度 ' + (lim && lim.affection != null ? lim.affection : '?') + '）');
+      skip('morning', '这次先不主动（按她的节奏）' + '（亲密度 ' + (lim && lim.affection != null ? lim.affection : '?') + '）');
       this._save(s);
     }
 
@@ -192,7 +245,7 @@ export class Life {
       const ph = absWindowPhase(now, target, crossMidnight ? 90 : 90, 15, crossMidnight ? sleepMin : null);
       if (ph === 'in') {
         if (quiet) { skip('night', '正处安静时段'); }
-        else { await doSend('night'); s.night = true; this._save(s); }
+await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, cfg)); this._save(s);
       } else if (ph === 'after') {
         s.night = true;
         skip('night', '错过了晚安窗口（睡前 90 分钟内电脑没在跑）——不补发：她睡着以后不能再发晚安');
@@ -200,7 +253,7 @@ export class Life {
       }
     } else if (!allowNight && !s.night) {
       s.night = true;
-      skip('night', '关系还没到能主动找你的程度');
+      skip('night', '这次先不主动（按她的节奏）');
       this._save(s);
     }
 
@@ -209,6 +262,12 @@ export class Life {
       const A = hm(cfg.pokeWindow[0]); const B = hm(cfg.pokeWindow[1]);
       const span = Math.max(60, (B >= A ? B - A : 1440 - A + B));
       const slot = A + Math.floor((span / maxPokes) * (s.pokes + 0.5)) + this._jitterFor('poke' + s.pokes, now, 20);
+      // 世界引擎说了"她明天大概什么时候想找他" → 那段之外基本不主动（她开庭/上班时不会来找你）
+      const pAt = this._parseProactiveAt(cfg.proactiveAt);
+      if (pAt != null) {
+        const raw = Math.abs(cur - pAt);
+        if (Math.min(raw, 1440 - raw) > 90) return;
+      }
       if (cur >= slot) {
         await doSend('poke');
         s.pokes += 1;
@@ -217,7 +276,7 @@ export class Life {
       }
     } else if (maxPokes === 0 && !s.claimedPokesOff) {
       s.claimedPokesOff = true;
-      skip('poke', '关系还没到能主动找你的程度（亲密度 ' + (lim && lim.affection != null ? lim.affection : '?') + '）：她不会天天来找你');
+      skip('poke', '这次先不主动（按她的节奏）：她不会天天来找你。');
       this._save(s);
     }
 

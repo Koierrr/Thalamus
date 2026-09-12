@@ -28,6 +28,8 @@ const routes = {
   'panel/workshop/sessions': { sessions: [{ id: 's1', title: '新造人', updatedAt: now }] },
   'panel/workshop/session': { session: { id: 's1', messages: [], draft: { name: '小暖', assessments: { mbti: 'INFP' } } } },
   'panel/portrait': { portrait: '他最近工作很忙，嘴硬心软' },
+  'panel/diary/days': { days: ['2026-09-11', '2026-09-10'] },
+  'panel/diary': { date: '2026-09-11', days: ['2026-09-11', '2026-09-10'], markdown: '# 2026-09-11 她的日记\n\n> 这是她写给自己看的。\n\n## 📔 她的话（私人日记）\n\n今天接了个新案子，晚上改到两点。\n\n## 🕐 她的一天（生活流水）\n\n- **10:00** 去律所开会', latest: { date: '2026-09-11', forDate: '2026-09-12', diary: '今天接了个新案子，晚上改到两点。', generatedAt: now } },
   'panel/today': { today: { date: '2026-09-12', wake: '08:12', sleep: '02:00', mood: 55, battery: 62, activeToday: 1, focus: '旅行', events: ['周末'], traitDrift: { socialBattery: 3, warmth: 0 } }, deform: { state: 'normal', stress: 22, integration: 12, thresholds: { grip: 46, loop: 70, shadow: 88 }, lastGripAt: now - 3 * 86400000, lastEvent: 'warm' }, world: { date: '2026-09-11', forDate: '2026-09-12', wake: '08:12', sleep: '02:00', mood: 55, focus: '旅行', weather: '小雨，19~25°C', weatherSource: 'real', generatedAt: now - 3600000, diary: '今天接了个新案子，晚上改到两点。', thoughts: ['想去看海'], secrets: ['悄悄存了他的一句话'], npcs: [{ name: '张姐', rel: '同事', note: '爱八卦但心软' }], longterm: [{ text: '想学做甜点' }], flow: [{ time: '10:00', text: '去律所开会' }], workload: 62, job: { type: 'office', workStart: '09:00', workEnd: '18:00', workDays: '1,2,3,4,5', source: 'world', reason: '律所坐班' }, tone: { intimacy: 12, address: '用名字或哎', style: '客气简短有边界感', forbid: ['撒娇', '叫昵称'], reason: '刚认识', source: 'world' }, disclosed: [{ layer: '表层', topic: '老家在苏州', at: now }], interestLog: [{ at: now, kind: '兴趣', op: 'add', text: '露营', reason: '同事拉我去的' }], tendency: { interest: 0.55, phrase: 0.4, why: '发起力 44／秩序感 73 → 兴趣变化倾向 55%' } }, evolution: { warm: 2, rude: 0, chats: 12, lastEvolvedAt: 0 }, relation: { hasOwner: true, stage: '刚认识', affection: 6, mood: 55, chats: 12, firstSeen: now - 5 * 86400000, callHint: '用名字或哎', next: { label: '熟人', min: 20, need: 14 }, stages: [{ min: 0, label: '刚认识', callHint: '用名字或哎' }] } },
   'panel/avatar': { refs: [{ id: 'r1', file: 'r1.png', angle: '正面', bytes: 204800, addedAt: now, url: 'panel/avatar/file?id=r1' }, { id: 'r2', file: 'r2.png', angle: '45度', bytes: 190000, addedAt: now, url: 'panel/avatar/file?id=r2' }], mainId: 'r1', appearance: { face: '圆脸、单眼皮', hair: '黑色长发齐刘海', style: '黑白极简', body: '160 偏瘦', vibe: '安静' }, albumCount: 3, canGenerate: true, hint: '' },
   'panel/album': { items: [{ id: 'p1', file: 'p1.png', scene: '咖啡店窗边', mode: 'i2i', createdAt: now, bytes: 320000, url: 'panel/album/file?id=p1' }, { id: 'p2', file: 'p2.png', scene: '雨天窝沙发', mode: 't2i', createdAt: now - 3600000, bytes: 280000, url: 'panel/album/file?id=p2' }] },
@@ -72,6 +74,16 @@ app.whenReady().then(async () => {
       console.log('METRICS[' + t + '] ' + JSON.stringify(m));
     } catch (e) {
       console.log('METRICS[' + t + '] FAILED: ' + e.message);
+    }
+    // PREVIEW_SCROLL=某个小项标题 → 展开它并滚到视野里（给"改了这个界面"留可看的证据）
+    if (t === tab && process.env.PREVIEW_SCROLL) {
+      await win.webContents.executeJavaScript(
+        "(function(){var q=" + JSON.stringify(process.env.PREVIEW_SCROLL) + ";"
+        + "var all=document.querySelectorAll('details.item,details.sec');"
+        + "for(var i=0;i<all.length;i++){var sm=all[i].querySelector('summary');"
+        + "if(sm&&sm.textContent.indexOf(q)>=0){all[i].open=true;all[i].scrollIntoView({block:'start'});return true}}return false})()"
+      );
+      await new Promise((r) => setTimeout(r, 500));
     }
     if (tab === 'all') {
       const img = await win.webContents.capturePage();

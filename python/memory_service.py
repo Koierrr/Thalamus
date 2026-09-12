@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -74,15 +75,65 @@ def remember_user(u):
         pass
 
 
-def build_memory(cfg):
+def _embed_dims_guard(store, dims):
+    """向量维度护栏（2026-09-13 加）。
+
+    为什么需要：faiss 的集合是按固定维度建的。换了嵌入模型但维度不一样时，
+    mem0 不会说人话，只会抛一堆底层报错，表现出来就是"记忆时好时坏"。
+    这里把第一次建库时的维度记在库里，之后每次启动都对比；不一致就直接拒绝启动并说清楚怎么办。
+    """
+    marker = os.path.join(store, 'embed-dims.json')
+    prev = None
+    try:
+        with open(marker, 'r', encoding='utf-8') as f:
+            prev = int((json.load(f) or {}).get('dims') or 0) or None
+    except Exception:  # noqa: BLE001
+        prev = None
+    if prev is None:
+        try:
+            with open(marker, 'w', encoding='utf-8') as f:
+                json.dump({'dims': int(dims), 'at': time.strftime('%Y-%m-%d %H:%M:%S')}, f, ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    if int(prev) != int(dims):
+        raise RuntimeError(
+            '向量维度变了：记忆库是按 %d 维建的，现在配置的是 %d 维。'
+            '①把「大脑 → ⑥ 向量接口」换回原来的嵌入模型（或把维度改回 %d）；'
+            '②确实想换：去后台「记忆 → 提炼设置 → 一键重置」勾上"清空她的记忆"重建记忆库。'
+            % (int(prev), int(dims), int(prev))
+        )
+
+
+def build_memory(cfg, llm_override=None):
     from mem0 import Memory
-    llm = cfg.get('llm') or {}
+    llm = llm_override or (cfg.get('llm') or {})
     emb = cfg.get('embedder') or {}
     store = cfg.get('store_path') or os.path.join(HERE, 'mem0-store')
     os.makedirs(store, exist_ok=True)
     model = llm.get('model') or ''
     if not model:
         raise RuntimeError('未配置提炼模型（后台→设置→记忆 里填写，或先填好主对话模型）')
+    # 向量服务：provider 由后台「向量接口」的地址决定（本地=ollama / 云端=openai 兼容）
+    emb_provider = str(emb.get('provider') or 'ollama').strip().lower()
+    emb_dims = int(emb.get('embedding_dims') or 1024)
+    if emb_provider not in ('ollama', 'openai'):
+        emb_provider = 'ollama'
+    emb_model = emb.get('model') or 'bge-m3'
+    _embed_dims_guard(store, emb_dims)
+    if emb_provider == 'openai':
+        emb_conf = {
+            'model': emb_model,
+            'openai_base_url': emb.get('openai_base_url') or 'https://api.siliconflow.cn/v1',
+            'api_key': emb.get('api_key') or '',
+            'embedding_dims': emb_dims,
+        }
+    else:
+        emb_conf = {
+            'model': emb_model,
+            'ollama_base_url': emb.get('ollama_base_url') or 'http://127.0.0.1:11434',
+            'embedding_dims': emb_dims,
+        }
     config = {
         'telemetry': False,  # 她的记忆不出门：关掉 mem0 内置遥测
         'llm': {
@@ -96,16 +147,12 @@ def build_memory(cfg):
             },
         },
         'embedder': {
-            'provider': 'ollama',
-            'config': {
-                'model': emb.get('model') or 'bge-m3',
-                'ollama_base_url': emb.get('ollama_base_url') or 'http://127.0.0.1:11434',
-                'embedding_dims': int(emb.get('embedding_dims') or 1024),
-            },
+            'provider': emb_provider,
+            'config': emb_conf,
         },
         'vector_store': {
             'provider': 'faiss',
-            'config': {'path': store, 'collection_name': 'her_memory', 'embedding_model_dims': int(emb.get('embedding_dims') or 1024)},
+            'config': {'path': store, 'collection_name': 'her_memory', 'embedding_model_dims': emb_dims},
         },
         'history_db_path': os.path.join(store, 'history.db'),
         # 事实抽取提示词（2026-09-12 改成她的第一人称）：
@@ -118,11 +165,29 @@ def build_memory(cfg):
             '②关于她自己用「我」；③口语、短句（8~25 字）；④只写事实，不写「谈话中提及」「用户表示」这类套话。'
             '正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天。'
             '反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。'
-            '不要记日常寒暄；约定、偏好、重要事件、对方提到的日程必须记。'
+            '不要记日常寒暄；约定、偏好、重要事件、对方提到的日程必须记。一律用中文写（只有原话本身是英文时才保留英文）。'
             '以 JSON 返回：{{"facts": ["一句话记忆（第一人称）", ...]}}'
         ),
     }
     return Memory.from_config(config)
+
+
+def _llm_candidates(cfg):
+    """主力 + 回落链（后台五个接口各留三个回落槽）：返回 [llm配置, ...]，按顺序试"""
+    base = dict(cfg.get('llm') or {})
+    out = [base]
+    for fb in (base.get('fallbacks') or []):
+        if isinstance(fb, dict) and fb.get('base_url') and fb.get('model'):
+            out.append({'base_url': fb.get('base_url'), 'api_key': fb.get('api_key') or '', 'model': fb.get('model')})
+    return out
+
+
+def memory_with_fallback(cfg, idx):
+    """取第 idx 个候选取用的 Memory 实例（0=主力，>0=回落；不改全局状态）"""
+    cands = _llm_candidates(cfg)
+    if idx == 0 or idx >= len(cands):
+        return None
+    return build_memory({**cfg, 'llm': cands[idx]})
 
 
 def get_memory(force_reload=False):
@@ -209,9 +274,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, {'ok': True, 'ready': False, 'reason': err or '未知原因'})
                 llm = (cfg.get('llm') or {})
                 emb = (cfg.get('embedder') or {})
+                # 把"实际在用的向量服务"如实报出去（2026-09-13）：后台据此显示，避免"设置与行为对不上"
+                ep = str(emb.get('provider') or 'ollama').lower()
                 return self._send(200, {
                     'ok': True, 'ready': True, 'engine': 'mem0', 'vector': 'faiss',
                     'embedder': emb.get('model') or 'bge-m3',
+                    'embedder_provider': ep,
+                    'embedder_url': (emb.get('openai_base_url') if ep == 'openai' else emb.get('ollama_base_url')) or '',
+                    'embedder_dims': int(emb.get('embedding_dims') or 1024),
                     'llm': llm.get('model') or '',
                 })
             except Exception as e:  # noqa: BLE001
@@ -304,18 +374,31 @@ class Handler(BaseHTTPRequestHandler):
                                 raise
                         em.embed = logged_embed
                         em._logged = True
-                    try:
-                        raw = m.add(
-                            str(b.get('text') or ''),
-                            user_id=str(b.get('user_id') or 'global'),
-                            metadata=b.get('metadata') or {},
-                            infer=bool(b.get('infer')),
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        import traceback
-                        sys.stdout.write('[mem] /add 堆栈: ' + traceback.format_exc()[-1500:] + '\n')
-                        sys.stdout.flush()
-                        raise
+                    raw = None
+                    last_err = None
+                    for _idx in range(max(1, len(_llm_candidates(cfg)))):
+                        try:
+                            _mm = m if _idx == 0 else memory_with_fallback(cfg, _idx)
+                            if _mm is None:
+                                break
+                            if _idx:
+                                sys.stdout.write('[mem] 主力失败，改用回落槽 #%d（%s）\n' % (_idx, (_llm_candidates(cfg)[_idx] or {}).get('model')))
+                                sys.stdout.flush()
+                            raw = _mm.add(
+                                str(b.get('text') or ''),
+                                user_id=str(b.get('user_id') or 'global'),
+                                metadata=b.get('metadata') or {},
+                                infer=bool(b.get('infer')),
+                            )
+                            last_err = None
+                            break
+                        except Exception as e:  # noqa: BLE001
+                            last_err = e
+                            import traceback
+                            sys.stdout.write('[mem] /add 第 %d 槽失败: %s\n' % (_idx, str(e)[:200]))
+                            sys.stdout.flush()
+                    if raw is None and last_err is not None:
+                        raise last_err
                 rs = raw.get('results') if isinstance(raw, dict) else raw
                 ids = [x.get('id') for x in (rs or []) if isinstance(x, dict) and x.get('id')]
                 return self._send(200, {'ok': True, 'ids': ids, 'raw_count': len(rs or [])})

@@ -22,22 +22,47 @@ export const EVENT_LABEL = {
 };
 
 export class Deform {
-  constructor(dir, log, config) {
+  constructor(dir, log, config, traitsGet) {
+    this._traitsGet = typeof traitsGet === 'function' ? traitsGet : null;
     this.file = path.join(dir, 'deform-state.json');
     this.log = log || (() => {});
     this._cfgGet = typeof config === 'function' ? config : () => ({});
   }
 
-  /** 后台设置：{enabled, sensitivity, grip, loop, shadow} */
+  /**
+   * 阈值与灵敏度（2026-09-13 第三次改版：**不再手调，由性格自动推**）
+   *   秩序感高 → 更压得住（阈值抬高）　依恋高 → 更怕被冷落（阈值压低）
+   *   灵敏度：依恋越高越敏感、温度越低越不在意
+   *   锐度 → 崩起来多狠（harshness，供语气使用）
+   * 都能从"她是谁"里推出来，所以后台只读展示，不给滑杆。
+   */
+  thresholdsFromTraits(T = {}) {
+    const num = (v, dft) => (typeof v === 'number' && isFinite(v) ? v : dft);
+    const ord = num(T.orderliness, 50);
+    const att = num(T.attachment, 50);
+    const wrm = num(T.warmth, 50);
+    const shp = num(T.sharpness, 50);
+    const grip = Math.max(15, Math.min(85, Math.round(45 + (ord - 50) * 0.3 - (att - 50) * 0.2)));
+    const loop = Math.max(grip + 10, Math.min(95, grip + 22));
+    const shadow = Math.max(loop + 8, Math.min(100, loop + 15));
+    const sensitivity = Math.max(0.5, Math.min(2, Math.round((1 + (att - 50) / 100 * 1.5 + (50 - wrm) / 100 * 0.5) * 100) / 100));
+    const harshness = Math.max(0, Math.min(1, Math.round((shp / 100) * 100) / 100));
+    return { grip, loop, shadow, sensitivity, harshness, from: 'traits' };
+  }
+
+  /** 后台设置：开关仍可配；阈值/灵敏度由性格推（不再读后台的滑杆值） */
   cfg() {
     const d = (this._cfgGet() || {}).deform || {};
-    const clamp = (v, lo, hi, dft) => (typeof v === 'number' && isFinite(v) ? Math.max(lo, Math.min(hi, v)) : dft);
+    const T = (typeof this._traitsGet === 'function' ? this._traitsGet() : null) || (d.traits || null);
+    const derived = T ? this.thresholdsFromTraits(T) : { grip: DEFAULT_TH.grip, loop: DEFAULT_TH.loop, shadow: DEFAULT_TH.shadow, sensitivity: 1, harshness: 0.5, from: 'default' };
     return {
       enabled: d.enabled !== false,
-      sensitivity: clamp(d.sensitivity, 0.2, 3, 1),
-      grip: clamp(d.grip, 10, 95, DEFAULT_TH.grip),
-      loop: clamp(d.loop, 20, 98, DEFAULT_TH.loop),
-      shadow: clamp(d.shadow, 30, 100, DEFAULT_TH.shadow),
+      sensitivity: derived.sensitivity,
+      grip: derived.grip,
+      loop: derived.loop,
+      shadow: derived.shadow,
+      harshness: derived.harshness,
+      from: derived.from,
     };
   }
 
@@ -81,7 +106,8 @@ export class Deform {
   info() {
     const c = this.cfg();
     const s = this._read();
-    const gripTh = c.grip + (s.integration || 0) * 0.15;
+    // 第三次改版：阈值只由性格决定（成长体现在六维本身，不再靠整合度抬高阈值）
+    const gripTh = c.grip;
     let state = 'normal';
     if (c.enabled) {
       if (s.stress >= c.shadow) state = 'shadow';
