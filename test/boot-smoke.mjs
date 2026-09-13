@@ -78,9 +78,10 @@ apply(ctx, { enabled: false, dataDir: path.join(home, 'store'), memory: { sideca
 const joinRoot = (...parts) => path.join(path.dirname(fileURLToPath(import.meta.url)), '..', ...parts);
 const handler = captured['wechat-companion: http api route'];if (!handler) throw new Error('HTTP 路由未注册');
 
-function req(method, url, body) {
+function req(method, url, body, headers) {
   const em = new EventEmitter();
   em.method = method; em.url = url;
+  em.headers = headers || {};
   if (body !== undefined) {
     process.nextTick(() => { em.emit('data', JSON.stringify(body)); em.emit('end'); });
   } else {
@@ -88,7 +89,7 @@ function req(method, url, body) {
   }
   return em;
 }
-function call(method, url, body) {
+function call(method, url, body, headers) {
   return new Promise((resolve) => {
     const res = {
       code: 0, body: '', headers: {},
@@ -98,7 +99,7 @@ function call(method, url, body) {
         resolve({ code: this.code, body: this.body, headers: this.headers, json: (() => { try { return JSON.parse(this.body); } catch { return {}; } })() });
       },
     };
-    handler(req(method, url, body), res);
+    handler(req(method, url, body, headers), res);
   });
 }
 const ok = (cond, label) => { if (!cond) throw new Error('断言失败: ' + label); console.log('✅', label); };
@@ -295,6 +296,29 @@ r = await call('POST', '/wechat-companion/panel/config', { chain: { world: [
 ] } });
 r = await call('GET', '/wechat-companion/panel/config');
 ok((((r.json.config || {}).chain || {}).world || []).length === 3, '超过三槽会被截到三个（每个接口三个槽就够）');
+
+// ── 远程访问口令（内网穿透的门锁，2026-09-14）──
+{
+  let r = await call('POST', '/wechat-companion/panel/config', { security: { accessKey: 'key-abc-123' } });
+  ok(r.code === 200, '设口令：能保存');
+  r = await call('GET', '/wechat-companion/panel/features');
+  ok(r.code === 401, '设了口令后，不带口令的请求被拒（401）');
+  r = await call('GET', '/wechat-companion/panel/features?key=key-abc-123');
+  ok(r.code === 200, '带对口令（?key=）放行');
+  r = await call('GET', '/wechat-companion/panel/features?key=wrong-key');
+  ok(r.code === 401, '口令不对照样拒');
+  r = await call('GET', '/wechat-companion/panel/features', undefined, { 'x-access-key': 'key-abc-123' });
+  ok(r.code === 200, '用 X-Access-Key 头也认');
+  r = await call('GET', '/wechat-companion/console');
+  ok(r.code === 401 && /口令/.test(r.body), '直接打开后台页会被拦住，并告诉你怎么带口令');
+  r = await call('GET', '/wechat-companion/panel/config?key=key-abc-123');
+  ok(r.code === 200 && String((((r.json.config || {}).security) || {}).accessKey || '') === '', '后台接口不吐口令原文');
+  ok(r.json.accessKeySet === true, '只告诉"设了没有"（后台据此显示状态）');
+  r = await call('POST', '/wechat-companion/panel/config?key=key-abc-123', { security: { accessKey: '' } });
+  ok(r.code === 200, '清口令：能保存');
+  r = await call('GET', '/wechat-companion/panel/features');
+  ok(r.code === 200, '清掉口令后一切照旧（本机使用完全不校验）');
+}
 
 console.log('\nBOOT-SMOKE ALL GREEN ✅  家目录: ' + home);
 

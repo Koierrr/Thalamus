@@ -24,6 +24,9 @@ export const PER_REPLY = { image: 1, voice: 1, sticker: 1, remember: 2, nudge_at
 /** 每个自然日的上限（防止一天刷你一脸图） */
 export const PER_DAY = { image: 3, voice: 5, sticker: 8, remember: 20, nudge_at: 5 };
 
+/** 跨轮去重要记几轮（最近这几轮里用过的同一条指令，这轮就不再执行） */
+export const RECENT_KEEP = 3;
+
 const RE = /<\s*(remember|image|voice|nudge_at|sticker)\s*[:：]\s*([^<>]{1,300}?)\s*>/gi;
 
 /**
@@ -66,6 +69,8 @@ export function filterCommands(commands, usage, dayKey, opts = {}) {
   const u = (usage && usage.date === dayKey) ? usage : emptyUsage(dayKey);
   const usedDay = u.used || (u.used = {});
   const usedReply = {};
+  const recent = Array.isArray(opts.recent) ? opts.recent : [];
+  const recentK = recent.map((r) => ({ kind: String((r && r.kind) || '').toLowerCase(), key: String((r && r.arg) || '').replace(/\s+/g, '') }));
   const seen = new Set();
   const ok = [];
   const dropped = [];
@@ -77,6 +82,13 @@ export function filterCommands(commands, usage, dayKey, opts = {}) {
     // 去重：同一条回复里同样的指令只说一次；同一天同样的内容也不重复（记住一件事尤其不能重复写）
     const key = kind + '\u0000' + arg.replace(/\s+/g, '');
     if (seen.has(key)) { dropped.push({ kind, arg, why: '这条回复里已经有过一样的' }); continue; }
+    // 跨轮重复（《爱语》的教训：模型会每回一次消息就重复输出同一条指令，直到完全停不下来）。
+    // 最近几轮里刚用过同一条 → 这一轮压掉并记账（记账进 usage.repeatBlocked，后台看得见）。
+    if (recentK.some((r) => r && r.kind === kind && r.key === arg.replace(/\s+/g, ''))) {
+      u.repeatBlocked = (Number(u.repeatBlocked) || 0) + 1;
+      dropped.push({ kind, arg, why: '连着几轮都在用同一条指令（先压一压，免得像复读）' });
+      continue;
+    }
     seen.add(key);
     const rn = usedReply[kind] || 0;
     if (rn >= (perReply[kind] || 0)) { dropped.push({ kind, arg, why: '这条回复里' + CMD_KIND[kind] + '的次数到顶了' }); continue; }
@@ -93,5 +105,6 @@ export function filterCommands(commands, usage, dayKey, opts = {}) {
 export function usageLine(usage, dayKey) {
   const u = (usage && usage.date === dayKey) ? (usage.used || {}) : {};
   const parts = Object.keys(CMD_KIND).map((k) => CMD_KIND[k] + ' ' + (u[k] || 0) + '/' + (PER_DAY[k] || 0));
-  return parts.join(' · ');
+  const rb = Number((usage && usage.date === dayKey ? usage.repeatBlocked : 0) || 0);
+  return parts.join(' · ') + (rb ? ('　（今天压掉 ' + rb + ' 次连着重复的指令）') : '');
 }

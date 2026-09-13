@@ -60,7 +60,7 @@ for (const m of html.matchAll(/panel\/config',\s*\{/g)) {
 }
 
 const KNOWN = new Set(['behavior', 'media', 'channel', 'system', 'life', 'memory', 'deform', 'world', 'workshop', 'params', 'job',
-  'quietHours', 'replyToAll', 'ownerPeerId', 'blocklist', 'paused', 'dataDir', 'savedAt',
+  'quietHours', 'replyToAll', 'ownerPeerId', 'blocklist', 'paused', 'dataDir', 'savedAt', 'security',
   'chat', 'image', 'tts', 'asr', 'vision', 'embed']);
 // 也收集 saveCfgBtn 闭包里 return { <group>: ... } 构造的分组（载荷不在调用点）。
 // 只扫 saveCfgBtn 自己的括号范围——否则别的接口的请求体（如 model-test 的 form:{baseURL:…}）

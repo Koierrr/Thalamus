@@ -40,20 +40,24 @@ export function saveSummary(dir, peerKey, { text, upto, count } = {}) {
 export const SUMMARY_SYS = '你负责把一段微信聊天记录压缩成一小段"她自己的记忆"。'
   + '用第一人称、口语、不要编号、不要标题，60~120 字，只写**聊过的事和结论**：'
   + '他提过的具体信息（人名/地点/时间/偏好）、你答应过的事、你们说定的结果、气氛上的变化。'
-  + '不要写"他们聊了…"这种旁观说法，也不要写寒暄。只输出这段记忆本身，不要解释。';
+  + '两条硬要求：①**开头先交代这件事发生在哪天**（写成"X月X日"），她以后才能分清先后；'
+  + '②**没意义的寒暄、闲聊、表情来回不要记**（只留有用的），不要写"他们聊了…"这种旁观说法。'
+  + '只输出这段记忆本身，不要解释。';
 
 /**
  * 把"老的那一段"总结成一小段记忆。失败返回 null（调用方据此**不裁**）。
  * chat 是模型调用函数（与记忆提炼同一条链），由调用方注入，方便测试。
  */
-export async function summarizeOlder({ dir, peerKey, older, chat, logger, timeoutMs } = {}) {
+export async function summarizeOlder({ dir, peerKey, older, chat, logger, timeoutMs, sysPrompt } = {}) {
   const turns = Array.isArray(older) ? older : [];
   if (turns.length < 4 || typeof chat !== 'function') return null;
+  // 用户自定义的总结提示词（留空用内置的）；见后台「大脑 → 通用参数 → 聊天机制」
+  const sys = (sysPrompt && String(sysPrompt).trim()) ? String(sysPrompt).slice(0, 500) : SUMMARY_SYS;
   const text = turns.map((m) => ((m && m.role === 'her') ? '她：' : '他：') + String((m && m.text) || '').slice(0, 300)).join(String.fromCharCode(10));
   try {
     const r = await chat({
       messages: [
-        { role: 'system', content: SUMMARY_SYS },
+        { role: 'system', content: sys },
         { role: 'user', content: '【聊天记录】' + String.fromCharCode(10) + text.slice(0, 6000) },
       ],
       temperature: 0.2, maxTokens: 260, timeoutMs: Number(timeoutMs) || 20000,

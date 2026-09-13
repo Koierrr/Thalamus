@@ -305,6 +305,11 @@ export class Soul {
     return {
       chunkMax: Math.min(5, Math.max(1, Number(b.chunkMax) || 3)),
       contextRounds: Math.min(60, Math.max(2, Number(b.contextRounds) || Number((b.params || {}).historyRounds) || 16)),
+      // 治断片（批 E4）的两个旋钮（2026-09-14 补：原计划里就有，当时漏做）
+      // summaryStart：未总结的老对话**攒到这么多轮**才开始总结（省模型调用，别每两轮就总结一次）
+      // summaryPrompt：用户可自定义的总结提示词，留空就用内置 SUMMARY_SYS
+      summaryStart: Math.min(40, Math.max(2, Number(b.summaryStart) || 6)),
+      summaryPrompt: String(b.summaryPrompt || '').slice(0, 500),
       maxTokens: Math.min(8000, Math.max(64, Number((b.params || {}).maxTokens) || 500)),
       voiceRate: Number(b.voiceRate) || 0,
       topK: Math.min(15, Math.max(3, Number(m.topK) || 6)),
@@ -975,13 +980,16 @@ export class Soul {
     const cands = (Array.isArray(chain) ? chain : []).filter((c) => c && c.baseURL && c.model);
     const done = () => { try { delete this._summarizing[peerKey]; } catch { /* noop */ } };
     if (!cands.length) { done(); return; }                  // 没配提炼模型 → 不裁也不报错
+    const bp = this._behavior() || {};
     const c = cands[0];
     const chat = (opts) => chatCompletion(Object.assign({ baseURL: c.baseURL, apiKey: c.apiKey || '', model: c.model }, opts));
-    void summarizeOlder({ dir: this.dir, peerKey, older, chat, logger: (m) => this.log(m) })
+    void summarizeOlder({ dir: this.dir, peerKey, older, chat, logger: (m) => this.log(m), sysPrompt: bp.summaryPrompt })
       .then((out) => {
         if (!out) return;
         saveSummary(this.dir, peerKey, out);
         this.log('[soul] 长对话已总结成记忆（' + out.count + ' 轮 → ' + out.text.length + ' 字）');
+        // 禁黑盒：总结发生了就要在实况直播看得见（原计划里就有这行，2026-09-14 补上）
+        if (this.activity) this.activity('[总结] 把最早的 ' + out.count + ' 轮总结进记忆了（往前的对话她不会断片）');
         return this.addMemory({ who: peerKey, text: '（聊过的）' + out.text, cat: 'you' });
       })
       .catch(() => { /* 失败就算了，规则是"不裁" */ })
@@ -1258,7 +1266,8 @@ export class Soul {
         summaryBlock = '【你们之前聊过的（这是你自己记得的，别再说「我们没聊过」）】' + String(sum.text).slice(0, 600);
         histRaw = fullHist.slice(-b.contextRounds);
       } else {
-        this._kickSummary(peerKey, fullHist.slice(0, olderCount));   // 后台补摘要；这一轮先把老的都带上
+        // 「总结起始轮数」：老对话攒够这个数才开始总结（省调用；不够就先多带点上下文）
+        if (olderCount >= b.summaryStart) this._kickSummary(peerKey, fullHist.slice(0, olderCount));   // 后台补摘要；这一轮先把老的都带上
       }
     }
     const history = histRaw.map((m) => ({ role: m.role === 'her' ? 'assistant' : 'user', content: m.text }));

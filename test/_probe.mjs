@@ -46,7 +46,16 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (LIVE) {
+    // 后台设了口令之后（2026-09-14 起）转发必须带上口令，否则全是 401、页面看起来就"是空的"。
+    // 口令从本机配置里读，不出现在命令行/日志里。
+    const KEY = (() => {
+      try {
+        const p = path.join(process.env.USERPROFILE || process.env.HOME || '', '.dsh', 'wechat-companion', 'config.json');
+        return String(((JSON.parse(fs.readFileSync(p, 'utf8')) || {}).security || {}).accessKey || '');
+      } catch { return ''; }
+    })();
     const up = new URL(UPSTREAM + req.url);
+    if (KEY && !/[?&]key=/.test(up.search)) up.search = (up.search ? up.search + '&' : '?') + 'key=' + encodeURIComponent(KEY);
     const pr = http.request({ hostname: up.hostname, port: up.port, path: up.pathname + up.search, method: req.method, headers: { ...req.headers, host: up.host } }, (pres) => {
       res.writeHead(pres.statusCode, pres.headers);
       pres.pipe(res);

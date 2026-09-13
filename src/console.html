@@ -136,7 +136,11 @@ table.tbl tr.cur td{background:#f2fbf6;font-weight:600;color:var(--brand-d)}
 var CFG=null,MODELS={},TIMER=null,CUR='';
 function $(id){return document.getElementById(id)}
 function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
-function api(m,p,b){return fetch('/wechat-companion/'+p,{method:m,headers:b?{'content-type':'application/json'}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(j){if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j})})}
+function ckey(){try{return localStorage.getItem('ckey')||''}catch(e){return ''}}
+function wurl(u){var k=ckey();return u+(k?((u.indexOf('?')<0?'?':'&')+'key='+encodeURIComponent(k)):'')}
+function api(m,p,b){var k=ckey();return fetch('/wechat-companion/'+p+(k?((p.indexOf('?')<0?'?':'&')+'key='+encodeURIComponent(k)):''),{method:m,headers:b?{'content-type':'application/json'}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(j){if(!r.ok||j.error)throw new Error(j.error||('HTTP '+r.status));return j})})}
+/* 远程访问口令：地址里带 ?key=xxx 打开一次就记住（随后从地址栏抹掉，免得截图/浏览历史带出去） */
+try{var _km=/[?&]key=([^&]*)/.exec(location.search);if(_km){localStorage.setItem('ckey',decodeURIComponent(_km[1]));history.replaceState(null,'',location.pathname)}}catch(e){}
 function card(t){var c=document.createElement('div');c.className='card';var h3=document.createElement('h3');h3.textContent=t;c.appendChild(h3);return c}
 function row(){var r=document.createElement('div');r.className='row';for(var i=0;i<arguments.length;i++)r.appendChild(arguments[i]);return r}
 function f(label,inp2,hint){var w=document.createElement('div');var t=(inp2&&inp2.tagName||'').toUpperCase();var tp=(inp2&&inp2.type)||'';var auto=(t==='TEXTAREA')?'lg':(/地址|路径|备注|描述|画像|背景|内容|搜索|监听|口令|口头禅|兴趣/.test(label)?'lg':((tp==='number'||tp==='range'||/年龄|次数|分钟|天数|上限|比例|概率/.test(label))?'xs':'md'));w.className='f w-'+(hint||auto);var lb=document.createElement('label');lb.textContent=label;w.appendChild(lb);w.appendChild(inp2);return w}
@@ -586,6 +590,24 @@ function tSysItems(box){
   i1.body.appendChild(f('备份保留天数',bkI));
   i1.body.appendChild(saveCfgBtn('保存系统设置',function(){return {system:{pythonPath:py.value,autoStartEngine:asE.checked,backupKeepDays:Number(bkI.value)||7}}}));
   i1.body.appendChild(mut('数据目录：'+((cfg.dataDir&&cfg.dataDir!=='')?cfg.dataDir:'~/.dsh/wechat-companion')+'（整个目录=她的全部记忆，每日自动备份，含向量库）'));
+  /* 远程访问口令（内网穿透用）：设了之后所有请求都要带 ?key=… */
+  var iK=itemBlock('远程访问（内网穿透用）','给公网入口加一道门锁');box.appendChild(iK.el);
+  var kSt=mut('读取中…');iK.body.appendChild(kSt);
+  var kI=inp('',function(v){},'输入新口令（至少 8 位，越乱越好）');
+  iK.body.appendChild(f('远程访问口令',kI));
+  iK.body.appendChild(btn('保存口令','',function(b2){
+   var v=String(kI.value||'').trim();
+   if(v.length<8){alert('口令至少 8 位');return}
+   b2.disabled=true;
+   api('POST','panel/config',{security:{accessKey:v}}).then(function(){try{localStorage.setItem('ckey',v)}catch(e){}alert('口令已保存 ✅ 这台设备已经记住；别的设备打开时要在地址后面加 ?key=你的口令');go('ops')}).catch(function(e){alert('失败：'+e.message)}).then(function(){b2.disabled=false});
+  }));
+  iK.body.appendChild(btn('清掉口令','',function(b2){
+   if(!confirm('清掉之后，任何能访问到这个地址的人都不用口令了。确定？'))return;
+   b2.disabled=true;
+   api('POST','panel/config',{security:{accessKey:''}}).then(function(){try{localStorage.removeItem('ckey')}catch(e){}alert('口令已清掉');go('ops')}).catch(function(e){alert('失败：'+e.message)}).then(function(){b2.disabled=false});
+  }));
+  iK.body.appendChild(mut('这个口令是给「内网穿透 / 公网访问」用的：设了之后所有接口都要带口令（浏览器打开时在地址后面加 ?key=你的口令，打开一次这台设备就记住了）。没设 = 不校验，只在本机使用是安全的。提醒：只把 43121 这一个端口映射出去，不要暴露 43122（记忆引擎）和 43123。'));
+  api('GET','panel/config').then(function(r){kSt.className=(r&&r.accessKeySet)?'ok':'mut';kSt.textContent=(r&&r.accessKeySet)?'当前状态：已设口令（别的设备访问必须在地址后面加 ?key=）':'当前状态：没设口令 —— 只在本机用没问题；要对外穿透，请先设一个。'}).catch(function(){});
   var i2=itemBlock('配置导出 / 导入','换电脑或改乱了就用它');box.appendChild(i2.el);
   i2.body.appendChild(btn('导出全部配置（下载 JSON）','',function(){var blob=new Blob([JSON.stringify(cfg,null,2)],{type:'application/json'});var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='her-config-'+new Date().toISOString().slice(0,10)+'.json';a.click()}));
   var imp=document.createElement('textarea');imp.rows=3;imp.placeholder='把导出的 JSON 粘进来，点导入即可整体恢复';
@@ -636,16 +658,23 @@ function tStatus(box){
 function tToday(box){
  var cT=card('今天的她');box.appendChild(cT);
  var td=document.createElement('div');td.style.gridColumn='1/-1';cT.appendChild(td);td.appendChild(mut('加载中…'));
- api('GET','panel/today').then(function(r){var t=r.today||{};var df=r.deform||{};var W2=r.world||{};td.innerHTML='';
+ /* 话量住在人设的 behavior.talkiness 里（跟「她」页同一个来源）。
+    这里以前读的是一个从没被赋值过的全局 P → 每次渲染都抛 ReferenceError，又被 .catch 吞掉，
+    于是这张卡只剩标题、正文全空（2026-09-14 用户真机发现）。 */
+ Promise.all([api('GET','panel/today'),api('GET','panel/persona').catch(function(){return {}})]).then(function(rs){
+  var r=rs[0]||{};var p=(rs[1]||{}).persona||{};
+  var t=r.today||{};var df=r.deform||{};var W2=r.world||{};
+  var talk=(typeof (p.behavior||{}).talkiness==='number')?(p.behavior.talkiness):Math.round((((p.traits||{}).initiative==null)?50:p.traits.initiative));
+  td.innerHTML='';
   var chips=document.createElement('div');chips.className='chips';
-  [['☀ 起床 '+(t.wake||'—')],['🌙 睡觉 '+(t.sleep||'—')],['💭 心情 '+Math.round(t.mood||0)],['🔋 电量 '+Math.round(t.battery||0)],['💬 话量 '+Math.round((P.behavior&&P.behavior.talkiness!=null)?P.behavior.talkiness:50)+'/100'],['⚡ 今日痴迷 '+(t.focus||'—')],['🎭 压力 '+Math.round(df.stress||0)+(df.state&&df.state!=='normal'?('·变形:'+df.state):'')]].forEach(function(x){var c=document.createElement('button');c.className='chip';c.textContent=x[0];chips.appendChild(c)});
+  [['☀ 起床 '+(t.wake||'—')],['🌙 睡觉 '+(t.sleep||'—')],['💭 心情 '+Math.round(t.mood||0)],['🔋 电量 '+Math.round(t.battery||0)],['💬 话量 '+Math.round(talk)+'/100'],['⚡ 今日痴迷 '+(t.focus||'—')],['🎭 压力 '+Math.round(df.stress||0)+(df.state&&df.state!=='normal'?('·变形:'+df.state):'')]].forEach(function(x){var c=document.createElement('button');c.className='chip';c.textContent=x[0];chips.appendChild(c)});
   td.appendChild(chips);
   if(W2.weather){var wch=document.createElement('button');wch.className='chip';wch.textContent='🌤 '+W2.weather+(W2.weatherSource==='story'?'（她编的）':'');chips.appendChild(wch);}
   if(t.traitDrift){var dk=Object.keys(t.traitDrift).filter(function(k){return t.traitDrift[k]});if(dk.length){var LB={socialBattery:'社交电量',warmth:'情感温度',attachment:'依恋强度',sharpness:'批判锐度',initiative:'发起力',orderliness:'秩序感'};var dtx=dk.map(function(k){return LB[k]+(t.traitDrift[k]>0?'+':'')+t.traitDrift[k]}).join(' ');var tc2=document.createElement('button');tc2.className='chip';tc2.textContent='📊 今日六维弹性 '+dtx;tc2.title='性格底色不变，只是今天的状态在基准上摆一摆（明天弹回）';chips.appendChild(tc2)}}
   if(t.worldAuthored){var wc=document.createElement('button');wc.className='chip';wc.textContent='🌍 今天由世界引擎书写';chips.appendChild(wc);}
   if((t.events||[]).length)td.appendChild(mut('今天的事实：'+(t.events||[]).join(' · ')+'（这些是本地算出来的事实标签，会作为输入交给世界引擎；她的状态以上面那句话为准）'));
   td.appendChild(mut('同一天结果固定（重开页面也一样）；每天都会有点不一样——这就是生活。'));
- }).catch(function(){});
+ }).catch(function(e){td.innerHTML='';td.appendChild(mut('读取失败：'+((e&&e.message)||'未知')+'——刷新页面再试；若在手机上，检查地址里的口令是否最新'))});
 }
 
 /* ── 实况直播（写进给定容器） ── */
@@ -1099,8 +1128,13 @@ function tModels(box){
    im.body.appendChild(f('最多拆几条',cmI));
    var crI=inp(b1.contextRounds||16,function(v){},'16','number');
    im.body.appendChild(f('记得最近几轮',crI));
-   im.body.appendChild(saveCfgBtn('保存聊天机制',function(){return {behavior:{chunkMax:Number(cmI.value)||3,contextRounds:Number(crI.value)||16}}}));
-   im.body.appendChild(mut('「最多拆几条」1-8；真人一般 1-3 条，太多像刷屏。「记得最近几轮」2-100；越大越连贯，每次回复也越费 token。'));
+   /* 治断片（批 E4）：老对话攒到多少轮才开始总结；总结提示词可自定义（留空=用内置的） */
+   var ssI=inp(b1.summaryStart==null?6:b1.summaryStart,function(v){},'6','number');
+   im.body.appendChild(f('聊到多少轮才开始总结',ssI));
+   var spI=document.createElement('input');spI.type='text';spI.value=b1.summaryPrompt||'';spI.placeholder='留空 = 用内置的总结方式';
+   im.body.appendChild(f('自定义总结提示词',spI));
+   im.body.appendChild(saveCfgBtn('保存聊天机制',function(){return {behavior:{chunkMax:Number(cmI.value)||3,contextRounds:Number(crI.value)||16,summaryStart:Number(ssI.value)||6,summaryPrompt:String(spI.value||'').slice(0,500)}}}));
+   im.body.appendChild(mut('「最多拆几条」1-8；真人一般 1-3 条，太多像刷屏。「记得最近几轮」2-100；越大越连贯，每次回复也越费 token。「聊到多少轮才开始总结」2-40：老对话攒够这个数，才让便宜模型把它压成一条记忆（省调用）；没攒够就先把上下文多带一点，绝不丢消息。自定义总结提示词留空就用内置的；你自己写的话，建议保留"开头写日期"和"没意义的闲聊不要记"这两条。'));
   }).catch(function(){});
   var sv=btn('保存全部模型配置','pri',function(){sv.disabled=true;api('POST','panel/config',{chat:CFG.chat,image:CFG.image,tts:CFG.tts,asr:CFG.asr,vision:CFG.vision,embed:CFG.embed,params:{temperature:t1v},behavior:{voiceRate:t2v/100}}).then(function(){st.className='ok';st.textContent='模型配置已保存 ✅ 立即生效';sv.textContent='已保存 ✅';setTimeout(function(){sv.textContent='保存全部模型配置';sv.disabled=false},1500)}).catch(function(e){alert(e.message);sv.disabled=false})});
   S['ai-params'].appendChild(sv);
@@ -1341,11 +1375,12 @@ function tPersona(box){
     +(RR.weekendShiftMin!=null?('　周末推迟 '+RR.weekendShiftMin+' 分钟'):'')
     +(RR.nightOwlProb!=null?('　夜猫子 '+Math.round(RR.nightOwlProb*100)+'%'):'')
     +(RR.allNighterProb!=null?('　通宵 '+Math.round(RR.allNighterProb*100)+'%'):'')
+    +((RR.why)?(String.fromCharCode(10)+'它这次的判断：'+RR.why):'')
     +((T.rhythmNote&&T.rhythmNote.length)?(String.fromCharCode(10)+'它改了什么：'+T.rhythmNote.join('；')):'')
-    +(String.fromCharCode(10)+'（生活节奏以世界引擎为准：它按她的性格与职业推断，你手改的值会被它覆盖。）');
+    +(String.fromCharCode(10)+'（生活节奏以世界引擎为准：它按她的性格与职业推断、每次最多挪 ±60 分钟，动了会写在上面。）');
   } else {
    rhBox.className='mut';
-   rhBox.textContent='世界引擎还没跑过 → 现在用你填的基准作息。它跑过一次之后，作息改由它按性格与职业推断（你手改会被覆盖），这里会显示它推的结果与“它改了什么”。';
+   rhBox.textContent='世界引擎还没跑过 → 现在先用你填的基准作息。它跑过一次之后，作息改由它按她的性格与职业推断（每次最多挪 ±60 分钟，动了会写明理由），这里会显示它推的结果。';
   }
  lockRhythm(T.rhythmFrom);
  }).catch(function(){rhBox.textContent='（读取失败）'});
@@ -1558,7 +1593,7 @@ function tPersona(box){
      albHint.textContent=items.length?('共 '+items.length+' 张 · 生成入口在「女娲 → 形象工坊 → 拍生活照」或者下面的快捷生成'):'还没有照片。去「女娲 → 形象工坊」上传她的形象定稿图，再点"生成一张"。';
      items.forEach(function(x){
       var pCard=document.createElement('div');pCard.style.cssText='width:190px;border:1px solid #e6e9ec;border-radius:10px;overflow:hidden;background:#fff';
-      var img=document.createElement('img');img.src='/wechat-companion/'+x.url;img.style.cssText='width:100%;height:190px;object-fit:cover;display:block';
+      var img=document.createElement('img');img.src=wurl('/wechat-companion/'+x.url);img.style.cssText='width:100%;height:190px;object-fit:cover;display:block';
       var cap=document.createElement('div');cap.className='mut';cap.style.cssText='padding:5px 8px;font-size:12px';
       cap.textContent=new Date(x.createdAt).toLocaleString('zh-CN').slice(5,16)+' · '+(x.mode==='i2i'?'图生图':'文生图')+(x.sentAt?' · 已发过微信':'');
       var acts=row(
@@ -1952,7 +1987,7 @@ function tWorkshop(box){
      else{aHint.className='mut';aHint.textContent='已导入 '+refs.length+' 张；标了「主图」的那张是生图底图';}
      refs.forEach(function(x){
       var avCard=document.createElement('div');avCard.style.cssText='width:150px;border:1px solid #e6e9ec;border-radius:10px;overflow:hidden;background:#fff';
-      var img=document.createElement('img');img.src='/wechat-companion/'+x.url;img.style.cssText='width:100%;height:150px;object-fit:cover;display:block';
+      var img=document.createElement('img');img.src=wurl('/wechat-companion/'+x.url);img.style.cssText='width:100%;height:150px;object-fit:cover;display:block';
       var cap=document.createElement('div');cap.className='mut';cap.style.cssText='padding:5px 7px;font-size:12px';
       cap.textContent=(x.id===r.mainId?'⭐主图 · ':'')+(x.angle||'其他')+' · '+Math.round((x.bytes||0)/1024)+'KB';
       var acts=row(btn('设为主图','',function(){api('POST','panel/avatar/setmain',{id:x.id}).then(loadAv)}),btn('删除','dg',function(){if(window.confirm('删除这张定稿图？'))api('POST','panel/avatar/delete',{id:x.id}).then(loadAv)}));
@@ -1998,7 +2033,7 @@ function tWorkshop(box){
     b2.disabled=true;genOut.className='mut';genOut.textContent='正在生成…（一般 10~40 秒）';
     api('POST','panel/album/generate',{scene:sceneInp.value,mode:modeSel.value}).then(function(r){
      genOut.className='ok';genOut.textContent='生成成功 ✅ '+Math.round((r.item.bytes||0)/1024)+'KB · '+r.item.ms+'ms · 已进相册（「她」页 → 相册）';
-     genImg.src='/wechat-companion/'+r.item.url;genImg.style.display='block';
+     genImg.src=wurl('/wechat-companion/'+r.item.url);genImg.style.display='block';
     }).catch(function(e){genOut.className='er';genOut.textContent='失败：'+e.message}).then(function(){b2.disabled=false});
    }));
    a3.body.appendChild(genOut);a3.body.appendChild(genImg);

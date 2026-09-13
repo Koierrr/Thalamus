@@ -56,15 +56,22 @@ function dayKey(now) {
     } catch { /* 还没有世界剧本就算了 */ }
     // 身体状态是**派生**的：老状态里没有 body 时按需补算一次。
     // （不补的话，功能上线当天她一整天没有身体状态、后台卡片也是空的——等明天才出现。）
-    if (prev.body === undefined) {
+    // 身体状态是**派生**的：老状态没算过、或世界剧本今天被重新生成过（那时剧本里才出现 body），都要重算一次。
+    // （不重算的话：功能上线当天她一整天没有身体状态；补生成剧本之后也一样——要等明天才出现。）
+    let wsBody = null;
+    try {
+      const wsB = JSON.parse(fs.readFileSync(path.join(companionDir, 'world-state.json'), 'utf8'));
+      if (wsB && wsB.forDate === key && wsB.body && typeof wsB.body === 'object' && String(wsB.body.forDate || '') === key) wsBody = wsB;
+    } catch { /* 没有世界剧本就算了 */ }
+    if (prev.body === undefined || wsBody) {
       try {
-        const ws0 = JSON.parse(fs.readFileSync(path.join(companionDir, 'world-state.json'), 'utf8'));
+        const ws0 = wsBody || JSON.parse(fs.readFileSync(path.join(companionDir, 'world-state.json'), 'utf8'));
         const inti = Number((ws0 && ws0.tone && ws0.tone.intimacy) == null ? 0 : ws0.tone.intimacy) || 0;
         const tr0 = persona.traits || {};
         const bv = bodyView({ dir: companionDir, today: { date: key, __fingerprint: String(tr0.socialBattery || '') + String(persona.name || '') }, world: ws0, intimacy: inti });
-        prev.body = bv ? { period: bv.period, daily: bv.daily, lowEnergy: bv.lowEnergy, disclosureTier: bv.disclosureTier, note: bv.note, source: bv.source } : null;
-      } catch { prev.body = null; }
-      dirty = true;
+        const nextB = bv ? { period: bv.period, daily: bv.daily, lowEnergy: bv.lowEnergy, disclosureTier: bv.disclosureTier, note: bv.note, source: bv.source } : null;
+        if (JSON.stringify(nextB) !== JSON.stringify(prev.body)) { prev.body = nextB; dirty = true; }
+      } catch { if (prev.body === undefined) { prev.body = null; dirty = true; } }
     }
     if (dirty) { try { fs.writeFileSync(file, JSON.stringify(prev, null, 2), 'utf8'); } catch { /* 写不进去也不影响她 */ } }
     return prev;
@@ -105,6 +112,7 @@ function dayKey(now) {
   if (wr) {
     if (hmOk(wr.baseWake) && wr.baseWake !== B.baseWake) rhythmNote.push('基准起床 ' + (B.baseWake || '—') + ' → ' + wr.baseWake);
     if (hmOk(wr.baseSleep) && wr.baseSleep !== B.baseSleep) rhythmNote.push('基准睡觉 ' + (B.baseSleep || '—') + ' → ' + wr.baseSleep);
+    if (rhythmNote.length && wr.why) rhythmNote.push('它的理由：' + wr.why);
   }
 
   let allNighter = false, nightOwl = false, worldAuthored = false;

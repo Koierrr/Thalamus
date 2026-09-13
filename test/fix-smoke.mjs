@@ -890,5 +890,150 @@ const html = read('src/console.html');
   ok(/chat 返回缺少 content（原始响应/.test(routerSrc), '模型返回异常形状会把原始响应带进报错（真机上摘要链每次都失败，只有一句"缺少 content"根本查不动）');
 }
 
+// ── ㉕ 作息基准：世界引擎"真的去推"（2026-09-14 用户发现：基准和我填的一模一样）──
+{
+  const { WorldEngine } = await import('../src/world-engine.js');
+  const dW = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-rhythm-'));
+  fs.writeFileSync(path.join(dW, 'world-state.json'), JSON.stringify({
+    date: '2026-09-13', forDate: '2026-09-14', wake: '09:30', sleep: '01:30',
+    tone: { rhythm: { baseWake: '09:30', baseSleep: '01:30', weekendShiftMin: 60, nightOwlProb: 0.3, allNighterProb: 0.05, why: '她是夜猫子' } },
+  }), 'utf8');
+  let seen = '';
+  const replyW = {
+    content: JSON.stringify({
+      diary: '今天还行', wake: '10:00', sleep: '02:00', mood: 60, focus: '大理',
+      flow: [{ time: '10:00', text: '起床' }], thoughts: [], secrets: [], npc: [], portrait: '他最近忙',
+      longline: '学吉他', statusLine: '有点困', insomnia: false, proactiveAt: '20:00',
+      rhythm: { baseWake: '10:00', baseSleep: '02:00', weekendShiftMin: 60, nightOwlProb: 0.3, allNighterProb: 0.05, rhythmWhy: '她连着几天两点睡，把基准往后挪半小时' },
+      tone: { intimacy: 40, address: '用名字', style: '轻松点', talkDelta: 0, proactive: { morning: true, night: true, pokes: 2, nudges: 1 }, forbid: [], reason: '刚熟' },
+      body: { sleep: '没睡好', ailment: '没有', note: '' },
+    }),
+  };
+  const engW = new WorldEngine({
+    dir: dW,
+    router: { chat: async () => { throw new Error('不该走对话接口'); } },
+    chatFn: async (m) => { seen = JSON.stringify(m); return replyW; },
+    config: () => ({ world: { baseURL: 'https://world.example', model: 'world-model', weatherReal: false } }),
+    soul: null, logger: () => {},
+  });
+  const outW = await engW.generate({
+    persona: { name: '苏镜语', traits: { orderliness: 30 }, behavior: { baseWake: '08:00', baseSleep: '02:00', jitterMin: 45 } },
+    today: { date: '2026-09-13', wake: '08:30', sleep: '01:20', events: [] },
+    memories: [],
+  });
+  ok(/当前生效的基准是：起床 09:30 \/ 睡觉 01:30/.test(seen), '提示词拿"上一晚推的基准 09:30/01:30"当当前生效基准（不再是后台设的 08:00/02:00）');
+  ok(!/当前生效的基准是：起床 08:00/.test(seen), '不再把后台设的值当唯一基准（这就是"和我填的一模一样"的根源）');
+  ok(/单次最多挪 ±60 分钟/.test(seen), '提示词明令它自己重新判断基准、且单次最多挪 ±60 分钟（防每天大起大落）');
+  ok(!!(outW && outW.tone && outW.tone.rhythm && /往后挪半小时/.test(String(outW.tone.rhythm.why))), 'rhythm 的"为什么"被解析保存（后台能看见它这次调没调）：' + (outW && outW.tone && outW.tone.rhythm && outW.tone.rhythm.why));
+  ok(!!(outW && outW.tone && outW.tone.rhythm && outW.tone.rhythm.baseWake === '10:00'), '它推出来的新基准（10:00 起）覆盖旧的 09:30（下一晚会以这个为新起点）');
+  let mdW = '';
+  try { const fl = fs.readdirSync(path.join(dW, 'diary')); mdW = fs.readFileSync(path.join(dW, 'diary', fl[fl.length - 1]), 'utf8'); } catch { /* 没留档不致命 */ }
+  ok(/为什么：/.test(mdW), '日记的「作息基准」一节会写"为什么"（改基准要有交代）');
+
+  // 模型漏了 tone 的那一晚：昨天的分寸保住，但顶层那几项照常更新（不能整套静默退回昨天）
+  const dW2 = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-notone-'));
+  fs.writeFileSync(path.join(dW2, 'world-state.json'), JSON.stringify({
+    date: '2026-09-13', forDate: '2026-09-14', wake: '09:00', sleep: '01:00',
+    tone: { intimacy: 42, address: '叫哎', style: '有点闷', talkDelta: -5, proactive: { morning: true, night: true, pokes: 2, nudges: 1 }, forbid: ['别提工作'], reason: '他最近忙', statusLine: '旧的', rhythm: { baseWake: '09:30', baseSleep: '01:30' } },
+  }), 'utf8');
+  const engN = new WorldEngine({
+    dir: dW2,
+    router: { chat: async () => { throw new Error('不该走对话接口'); } },
+    chatFn: async () => ({ content: JSON.stringify({ diary: '还行', wake: '09:30', sleep: '01:30', mood: 60, focus: 'x', flow: [], thoughts: [], secrets: [], npc: [], portrait: 'x', longline: 'y', statusLine: '今天有点累', proactiveAt: '21:00', rhythm: { baseWake: '10:00', baseSleep: '02:00' } }) }),
+    config: () => ({ world: { baseURL: 'https://world.example', model: 'm', weatherReal: false } }),
+    soul: null, logger: () => {},
+  });
+  const outN = await engN.generate({ persona: { name: '苏镜语', traits: {}, behavior: { baseWake: '08:00', baseSleep: '02:00' } }, today: { date: '2026-09-13', wake: '09:00', sleep: '01:00', events: [] }, memories: [] });
+  ok(!!(outN && outN.tone && outN.tone.intimacy === 42), '模型漏 tone 时，昨天的分寸保住（熟度仍是 42，不会被冲成默认 10）：' + (outN && outN.tone && outN.tone.intimacy));
+  ok(!!(outN && outN.tone && outN.tone.statusLine === '今天有点累'), '即使漏 tone，顶层那句"她今天状态"照常更新：' + (outN && outN.tone && outN.tone.statusLine));
+  ok(!!(outN && outN.tone && outN.tone.rhythm && outN.tone.rhythm.baseWake === '10:00'), '即使漏 tone，作息基准也照常更新（不然那一晚的作息会静默退回昨天）');
+}
+
+// ── ㉖ 第五次改版原定但漏做的四处（2026-09-14 逐条对齐计划后补齐）──
+{
+  // ① 治断片：两个旋钮（总结起始轮数 + 自定义总结提示词）
+  ok(/summaryStart: Math\.min\(40/.test(soul), '「聊到多少轮才开始总结」已接线（默认 6，2-40）');
+  ok(/olderCount >= b\.summaryStart/.test(soul), '攒够起始轮数才去调用总结模型（不够就先多带上下文）');
+  ok(/sysPrompt: bp\.summaryPrompt/.test(soul), '「自定义总结提示词」已透传到总结器');
+  ok(/summaryStart/.test(idx) && /summaryPrompt/.test(idx), '后端接住这两个设置（进白名单，否则存了不生效）');
+  ok(/聊到多少轮才开始总结/.test(html) && /自定义总结提示词/.test(html), '后台能看见能改这两个设置（禁黑盒）');
+
+  // ② 摘要发生要在实况直播看得见
+  ok(/\[总结\] 把最早的/.test(soul), '总结完成会往实况直播写一行（原计划里就有，之前漏做）');
+
+  // ③ 摘要提示词的两条硬规则 + 自定义提示词真的生效
+  const { SUMMARY_SYS, summarizeOlder } = await import('../src/history-summary.js');
+  ok(/开头先交代这件事发生在哪天/.test(SUMMARY_SYS), '总结提示词要求"开头写日期"（她才能分清先后）');
+  ok(/没意义的寒暄/.test(SUMMARY_SYS), '总结提示词要求"没意义的闲聊不要记"');
+  let sysSeen = '';
+  const sumOut = await summarizeOlder({
+    dir: fs.mkdtempSync(path.join(os.tmpdir(), 'fix-sum-')), peerKey: 'p1',
+    older: [{ role: 'user', text: 'a' }, { role: 'her', text: 'b' }, { role: 'user', text: 'c' }, { role: 'her', text: 'd' }],
+    chat: async (o) => { sysSeen = String(o.messages[0].content); return { content: '记下了：他喜欢吃辣（2026年9月14日）' }; },
+    sysPrompt: '我的总结要求：只记跟吃有关的事',
+  });
+  ok(sysSeen === '我的总结要求：只记跟吃有关的事', '用户自定义的总结提示词真的顶替了内置的：' + sysSeen.slice(0, 30));
+  ok(!!(sumOut && /记下了/.test(sumOut.text)), '总结照常拿到结果：' + (sumOut && sumOut.text));
+
+  // ④ 指令跨轮重复抑制（《爱语》的教训：模型会每回一次就重复输出同一指令）
+  const { filterCommands, emptyUsage, usageLine, RECENT_KEEP } = await import('../src/commands.js');
+  const dK = '2026-09-14';
+  ok(RECENT_KEEP === 3, '跨轮去重看最近 3 轮');
+  const r1 = filterCommands([{ kind: 'image', arg: '大理海景' }], emptyUsage(dK), dK, { recent: [] });
+  ok(r1.ok.length === 1, '第一次用某条指令 → 正常执行');
+  const r2 = filterCommands([{ kind: 'image', arg: '大理海景' }], r1.usage, dK, { recent: r1.ok });
+  ok(r2.ok.length === 0 && /连着几轮/.test((r2.dropped[0] || {}).why || ''), '下一轮又用同一条 → 压掉并写明原因：' + (r2.dropped[0] || {}).why);
+  ok(Number(r2.usage.repeatBlocked) === 1, '压掉的次数会记账（后台看得见）');
+  ok(/压掉 1 次连着重复的指令/.test(usageLine(r2.usage, dK)), '后台那句用量里会显示压掉了几次：' + usageLine(r2.usage, dK));
+  const r3 = filterCommands([{ kind: 'image', arg: '律所窗外的天' }], r2.usage, dK, { recent: r1.ok });
+  ok(r3.ok.length === 1, '换成另一件事/另一条指令 → 照常执行（不是把整类指令禁掉）');
+  ok(/cmd-recent\.json/.test(idx) && /_rememberCommands\(/.test(idx), '插件会记住最近几轮用过的指令（跨轮去重要用）');
+}
+
+// ── ㉗ 远程访问口令（内网穿透的门锁，2026-09-14）──
+{
+  const urlAt = idx.indexOf('const url = new URL(req.url');
+  const guardAt = idx.indexOf('if (!this._accessOk(req, url))');
+  const firstRouteAt = idx.indexOf('path === \'panel/conn-test\'');
+  ok(guardAt > urlAt && guardAt < firstRouteAt, '口令校验插在“算出路径”之后、任何路由之前（否则有接口能绕过）');
+  ok(/_keyEq\(/.test(idx) && /timingSafeEqual/.test(idx), '口令用定长比较（不用 === 泄露长度/前缀）');
+  ok(/'x-access-key'/.test(idx) && /Bearer/.test(idx) && /Basic/.test(idx) && /searchParams/.test(idx), '口令支持 ?key= / X-Access-Key / Bearer / Basic 四种带法');
+  ok(/out\.security = \{ \.\.\.\(out\.security \|\| \{\}\), accessKey/.test(idx), '口令进配置白名单（否则保存不生效）');
+  ok(/accessKeySet/.test(idx) && /accessKey: ''/.test(idx), '后台接口只说“设了没有”，不回口令原文');
+  ok(/function ckey\(\)/.test(html) && /function wurl\(/.test(html), '后台页会自己带口令（含图片链接）');
+  ok(/localStorage\.setItem\('ckey'/.test(html) && /history\.replaceState/.test(html), '地址里带的 ?key= 会存下来并从地址栏抹掉（免得截图/历史带出去）');
+  ok(/远程访问（内网穿透用）/.test(html) && /清掉口令/.test(html), '后台有口令设置与“清掉口令”（禁黑盒）');
+  ok(/function ckey\(\)/.test(idx) && /localStorage\.setItem\("ckey"/.test(idx), '她的房间页同样会带口令并记住它');
+  ok(/只把 43121 这一个端口映射出去/.test(html), '后台写明：只映射 43121，别暴露 43122/43123');
+}
+
+// ── ㉘ 真机验收又抓到的两个（启动竞态让她整晚离线 / 补生成剧本后身体不刷新）──
+{
+  // ① 启动时设置源没就绪 → 不能把"本该在跑的她"关掉；而且要补几次重试自愈
+  ok(/typeof s\.enabled !== 'boolean'\) return;/.test(idx), '设置没就绪时不动她（以前 undefined 被当成 false → 她不上线且再无回调）');
+  ok(/for \(const ms of \[2000, 8000, 20000, 60000\]\)/.test(idx), '启动时立即应用一次 + 补四次重试（设置晚到也能自愈；setEnabled 幂等）');
+
+  // ② 世界剧本今天被重新生成过（剧本里有 body）→ 派生的身体状态要跟着刷新
+  const { todayState } = await import('../src/daily.js');
+  const dB = fs.mkdtempSync(path.join(os.tmpdir(), 'fix-body2-'));
+  const nowB = new Date();
+  const k2 = nowB.getFullYear() + '-' + String(nowB.getMonth() + 1).padStart(2, '0') + '-' + String(nowB.getDate()).padStart(2, '0');
+  fs.writeFileSync(path.join(dB, 'daily-state.json'), JSON.stringify({ date: k2, wake: '08:30', sleep: '01:00', body: { period: { cycleDay: 26, phase: 'mid' }, daily: null, lowEnergy: false, disclosureTier: 1, note: '', source: 'none' } }), 'utf8');
+  fs.writeFileSync(path.join(dB, 'world-state.json'), JSON.stringify({ forDate: k2, wake: '08:30', sleep: '01:00', tone: { intimacy: 40 }, body: { forDate: k2, sleep: '没睡好', ailment: '没有', note: '' } }), 'utf8');
+  const stB = todayState(dB, { traits: {}, behavior: {}, name: '苏镜语' });
+  ok(stB && /没睡好/.test(JSON.stringify(stB.body || {})), '补生成剧本后，今天的身体状态会跟着刷新（不再一直空着）：' + JSON.stringify(stB.body || {}).slice(0, 90));
+}
+
+// ── ㉙ 首页「今天的她」不许再变空（读了不存在的全局 P + 错误被无声吞掉）──
+{
+  const i0 = html.indexOf('function tToday(');
+  const tBody = i0 >= 0 ? html.slice(i0, i0 + 2600) : '';
+  ok(i0 >= 0 && tBody.length > 200, '首页有「今天的她」这张卡的渲染函数');
+  ok(!/P\.behavior/.test(tBody), '不再读那个从没被赋值过的全局 P（一读就 ReferenceError → 卡片只剩标题）');
+  ok(/panel\/persona/.test(tBody) && /talkiness/.test(tBody), '话量从人设里读（跟「她」页同一个来源）');
+  ok(/读取失败：/.test(tBody), '读取失败会写在卡片上，不再被 .catch(function(){}) 吞掉变空白（禁黑盒）');
+  ok(!/P\.behavior/.test(html), '整份控制台里都没有这个幽灵全局了');
+}
+
 console.log(fail === 0 ? '\nFIX-SMOKE ALL GREEN ✅  ' + pass + ' 项' : '\nFIX-SMOKE 有失败 ❌ ' + fail + ' 项');
 process.exit(fail === 0 ? 0 : 1);

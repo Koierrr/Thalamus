@@ -38,7 +38,7 @@ import {
 import { encodeWeixinChatId, decodeWeixinChatId } from './weixin-ids.js';
 import { ERRCODE_SESSION_EXPIRED } from './weixin-types.js';
 import { downloadMediaFromItem, uploadMediaToCdn } from './weixin-media.js';
-import { filterCommands, emptyUsage, usageLine, CMD_KIND } from './commands.js';
+import { filterCommands, emptyUsage, usageLine, CMD_KIND, RECENT_KEEP } from './commands.js';
 import { matchStickerName, readSticker, listStickers, addSticker, removeSticker, setStickerEnabled } from './stickers.js';
 import { Promises } from './promises.js';
 import { longingCurve, longingLine } from './longing.js';
@@ -178,7 +178,9 @@ const ROOM_HTML = [
   '<script>',
   'var chat=document.getElementById("chat");',
   'function bubble(c,t){var d=document.createElement("div");d.className="b "+c;d.textContent=t;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}',
-  'function j(m,p,b){return fetch("/wechat-companion/"+p,{method:m,headers:b?{"content-type":"application/json"}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()})}',
+  'function ckey(){try{return localStorage.getItem("ckey")||""}catch(e){return ""}}',
+  'function j(m,p,b){var k=ckey();return fetch("/wechat-companion/"+p+(k?((p.indexOf("?")<0?"?":"&")+"key="+encodeURIComponent(k)):""),{method:m,headers:b?{"content-type":"application/json"}:undefined,body:b?JSON.stringify(b):undefined}).then(function(r){return r.json()})}',
+  '(function(){try{var m=/[?&]key=([^&]*)/.exec(location.search);if(m){localStorage.setItem("ckey",decodeURIComponent(m[1]));history.replaceState(null,"",location.pathname)}}catch(e){}})();',
   'j("GET","panel/persona").then(function(p){document.getElementById("hn").textContent=(p.persona&&p.persona.name)||"她";});',
   'j("GET","panel/mem-engine").then(function(r){if(r.running)document.getElementById("hn").textContent+=" · 记忆引擎✅";}).catch(function(){});',
   'bubble("her","我在这儿呢 ~ 点下面跟我说话吧");',
@@ -343,6 +345,13 @@ class WeixinBridgeService {
       });
       this._settingsSource = () => scope.get();
       scope.watch(() => this._applySettings());
+      // 启动时设置源可能还没就绪：watch 的首次回调拿到 undefined → 被当成 false → 她不上线，
+      // 而且之后再没有回调，于是整晚都不在线（真机 2026-09-14 04:11 就是这样）。
+      // setEnabled 幂等，所以这里直接应用一次 + 补几次重试（设置晚到也能自愈）。
+      this._applySettings();
+      for (const ms of [2000, 8000, 20000, 60000]) {
+        try { setTimeout(() => { try { this._applySettings(); } catch { /* noop */ } }, ms); } catch { /* noop */ }
+      }
     });
 
     // One-way session notifier: subscribe once at mount. `session/event` is a
@@ -388,7 +397,11 @@ class WeixinBridgeService {
 
   _applySettings() {
     const s = this._settingsSource();
-    this.setEnabled(!!s?.enabled);
+    // 设置还没就绪（拿不到布尔值）→ 什么都别做。
+    // 以前这里写 `setEnabled(!!s?.enabled)`：undefined 被当成 false，会把"本该在跑的她"关掉，
+    // 而且 watch 之后不再回调 → 她整晚离线（真机 2026-09-14 04:11 就是这个坑）。
+    if (!s || typeof s.enabled !== 'boolean') return;
+    this.setEnabled(s.enabled);
   }
 
   /**
@@ -927,12 +940,14 @@ class WeixinBridgeService {
     const dayKey = new Date().toISOString().slice(0, 10);
     let usage = {};
     try { usage = JSON.parse(fs.readFileSync(path.join(this.companionDir, 'cmd-usage.json'), 'utf8')); } catch { usage = emptyUsage(dayKey); }
-    const f = filterCommands(list, usage, dayKey);
+    const f = filterCommands(list, usage, dayKey, { recent: this._recentCommands(peerKey) });
     try {
       const tmp = path.join(this.companionDir, 'cmd-usage.json.tmp-' + Date.now());
       fs.writeFileSync(tmp, JSON.stringify(f.usage), 'utf8');
       fs.renameSync(tmp, path.join(this.companionDir, 'cmd-usage.json'));
     } catch { /* 记账失败不影响执行 */ }
+    // 记下这一轮真正执行的指令（跨轮重复抑制靠它：连着几轮同一条就压掉）
+    if (f.ok.length) this._rememberCommands(peerKey, f.ok);
     for (const d of f.dropped) this.activity('[她想的] ' + (CMD_KIND[d.kind] || d.kind) + '：这次没做（' + d.why + '）');
     for (const c of f.ok) {
       try {
@@ -1089,6 +1104,56 @@ class WeixinBridgeService {
   /** 指令今日用量的文件路径（HTTP 处理函数里不许直接用 path，所以拼装放在方法里） */
   _cmdUsageFile() { return path.join(this.companionDir, 'cmd-usage.json'); }
 
+  /** 「最近几轮她用过的指令」的存档路径（跨轮重复抑制用） */
+  _cmdRecentFile() { return path.join(this.companionDir, 'cmd-recent.json'); }
+
+  /** 远程访问口令（空 = 不校验；给内网穿透用的那道门） */
+  _accessKey() {
+    try { return String((((this._modelConfig() || {}).security || {}).accessKey) || '').trim(); } catch { return ''; }
+  }
+
+  /** 定长比较：别用 === 泄露长度/前缀（口令是本机明文存的，但比较方式不该留破绽） */
+  _keyEq(a, b) {
+    const A = Buffer.from(String(a)); const B = Buffer.from(String(b));
+    if (A.length !== B.length || !A.length) return false;
+    try { return crypto.timingSafeEqual(A, B); } catch { return false; }
+  }
+
+  /** 请求有没有带对的口令：支持 ?key= / X-Access-Key 头 / Bearer / Basic */
+  _accessOk(req, url) {
+    const key = this._accessKey();
+    if (!key) return true;
+    let given = '';
+    try { given = String((url && url.searchParams && url.searchParams.get('key')) || ''); } catch { given = ''; }
+    if (!given) given = String((req.headers && req.headers['x-access-key']) || '');
+    const auth = String((req.headers && req.headers['authorization']) || '');
+    if (!given) { const m = /^Bearer\s+(.+)$/i.exec(auth); if (m) given = m[1]; }
+    if (!given) {
+      const m = /^Basic\s+(.+)$/i.exec(auth);
+      if (m) { try { const s = Buffer.from(m[1], 'base64').toString('utf8'); given = s.slice(s.indexOf(':') + 1); } catch { given = ''; } }
+    }
+    return !!given && this._keyEq(String(given).trim(), key);
+  }
+
+  _recentCommands(peerKey) {
+    try {
+      const all = JSON.parse(fs.readFileSync(this._cmdRecentFile(), 'utf8')) || {};
+      const arr = all[peerKey];
+      return Array.isArray(arr) ? arr.slice(-RECENT_KEEP) : [];
+    } catch { return []; }
+  }
+
+  _rememberCommands(peerKey, okList) {
+    try {
+      const file = this._cmdRecentFile();
+      let all = {};
+      try { all = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { all = {}; }
+      const prev = Array.isArray(all[peerKey]) ? all[peerKey] : [];
+      all[peerKey] = prev.concat((okList || []).map((c) => ({ kind: c.kind, arg: String(c.arg || '').slice(0, 120), ts: Date.now() }))).slice(-RECENT_KEEP);
+      fs.writeFileSync(file, JSON.stringify(all), 'utf8');
+    } catch { /* 记不下也不影响执行 */ }
+  }
+
   /** 读今天的指令用量（跨天自动归零） */
   _readCmdUsage() {
     const dayKey = new Date().toISOString().slice(0, 10);
@@ -1182,6 +1247,10 @@ class WeixinBridgeService {
       const r = role(b[k]);
       if (r) out[k] = r;
     }
+    if (b.security && typeof b.security === 'object') {
+      // 远程访问口令：空字符串表示"清掉"（清掉后不再校验；本机使用照旧）
+      if (typeof b.security.accessKey === 'string') out.security = { ...(out.security || {}), accessKey: b.security.accessKey.trim().slice(0, 64) };
+    }
     if (b.chain && typeof b.chain === 'object') {
       // 五个接口各留三个回落槽：[0]=主力, 1~3=回落（2026-09-12）
       const CH = {};
@@ -1217,6 +1286,9 @@ class WeixinBridgeService {
       const B = {};
       if (typeof b.behavior.voiceRate === 'number' && b.behavior.voiceRate >= 0 && b.behavior.voiceRate <= 1) B.voiceRate = b.behavior.voiceRate;
       if (Number.isInteger(b.behavior.chunkMax) && b.behavior.chunkMax >= 1 && b.behavior.chunkMax <= 8) B.chunkMax = b.behavior.chunkMax;
+      // 治断片（批 E4）的两个旋钮：总结起始轮数 + 自定义总结提示词
+      if (Number.isInteger(b.behavior.summaryStart) && b.behavior.summaryStart >= 2 && b.behavior.summaryStart <= 40) B.summaryStart = b.behavior.summaryStart;
+      if (typeof b.behavior.summaryPrompt === 'string') B.summaryPrompt = b.behavior.summaryPrompt.slice(0, 500);
       // 她的身体（生理期 + 日常身体）默认开；关掉后提示词与电量都不再受影响
       if (b.body && typeof b.body.enabled === 'boolean') B.body = { enabled: b.body.enabled };
       // N2：两条主动之间最少隔多久（分钟）——主动性闸门的统一间隔
@@ -2528,6 +2600,17 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
     try {
       const url = new URL(req.url, 'http://x');
       const path = url.pathname.replace(/^\/wechat-companion\/?/, '');
+      // ── 远程访问口令（机务 → 系统与备份）────────────────────────────────
+      // 只有**设了口令**才校验：没设＝一切照旧（本机使用不受影响）。
+      // 这是给"内网穿透"加的门：公网请求必须带 ?key=你的口令（或 X-Access-Key 头）。
+      if (!this._accessOk(req, url)) {
+        const isPage = (req.method === 'GET' && (path === '' || path === 'room' || path === 'room/' || path === 'console'));
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(isPage
+          ? '<!doctype html><meta charset="utf-8"><title>需要口令</title><body style="font-family:system-ui;padding:28px;line-height:1.9;color:#333"><h3>需要访问口令</h3><p>这台机器上的她设了访问口令。请在地址后面加上你的口令再打开，例如：</p><p><code>?key=你的口令</code></p><p>提示：口令在「机务 → 系统与备份 → 远程访问口令」里可以改。</p></body>'
+          : JSON.stringify({ ok: false, error: '需要访问口令（在地址后面加 ?key=你的口令）' }));
+        return;
+      }
       if (req.method === 'GET' && path === 'status') {
         const current = this._settingsSource();
         return send(200, {
@@ -3072,7 +3155,11 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
         return send(200, { ok: true, persona: r.persona, seeds: r.seeds });
       }
       if (req.method === 'GET' && path === 'panel/config') {
-        return send(200, { ok: true, config: this._modelConfig(), useSoul: this._soulEnabled() });
+        // 口令只回一个"设了没有"，**不回原文**（免得截图/日志把口令带出去）
+        const cfgOut = JSON.parse(JSON.stringify(this._modelConfig() || {}));
+        const hasKey = !!(this._accessKey());
+        if (cfgOut.security) cfgOut.security = { ...cfgOut.security, accessKey: '' };
+        return send(200, { ok: true, config: cfgOut, accessKeySet: hasKey, useSoul: this._soulEnabled() });
       }
       if (req.method === 'POST' && path === 'panel/config') {
         const body = await readBody();
