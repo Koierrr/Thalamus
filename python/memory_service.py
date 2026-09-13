@@ -10,6 +10,13 @@ import json
 import os
 import sys
 import threading
+
+# 遥测必须在导入 mem0 之前设好：mem0 只在 import 时读一次 MEM0_TELEMETRY，配置里的 telemetry 字段它不认。
+# 说清楚边界：这里关掉的是「遥测与远程公告」。
+# 记忆内容本身仍会按后台所配的接口走——提炼用的云端模型会收到对话原文，向量若切成云端也会收到记忆正文。
+for _k, _v in (('MEM0_TELEMETRY', 'False'), ('ANONYMIZED_TELEMETRY', 'False'), ('CHROMA_TELEMETRY', 'False'),
+               ('DO_NOT_TRACK', '1'), ('HF_HUB_DISABLE_TELEMETRY', '1'), ('SCARF_NO_ANALYTICS', 'true')):
+    os.environ.setdefault(_k, _v)
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +29,39 @@ PORT = 43122
 
 _lock = threading.RLock()
 _state = {'memory': None, 'error': None, 'cfg': None}
+_telemetry_checked = False
+
+
+def _force_telemetry_off():
+    """导入 mem0 之后再把遥测硬关一遍，并留一条可见记录。
+    mem0 把 posthog 的日志压到 CRITICAL+1，所以"日志里没有外发"不能当成证据；这里显式检查并打印。"""
+    try:
+        from mem0.memory import telemetry as _t
+        for _name in dir(_t):
+            _obj = getattr(_t, _name, None)
+            if _obj is None:
+                continue
+            if hasattr(_obj, 'disabled') and hasattr(_obj, 'capture'):
+                try:
+                    _obj.disabled = True
+                except Exception:
+                    pass
+                # 连它自己身上的方法也换成空操作：万一 mem0 直接调对象的方法而不过模块级函数，这里兜住
+                for _m in ('capture', 'capture_event', 'capture_batch'):
+                    if callable(getattr(_obj, _m, None)):
+                        try:
+                            setattr(_obj, _m, lambda *a, **k: None)
+                        except Exception:
+                            pass
+        try:
+            _t.capture_event = lambda *a, **k: None
+        except Exception:
+            pass
+        _off = str(os.environ.get('MEM0_TELEMETRY', '')).lower() in ('false', '0', 'no', 'off')
+        print('[memory_service] 遥测: MEM0_TELEMETRY=%s %s'
+              % (os.environ.get('MEM0_TELEMETRY'), '已关闭' if _off else '⚠️ 开关不是关闭值，请检查'))
+    except Exception as e:
+        print('[memory_service] 遥测检查跳过（不影响记忆功能）: %s' % e)
 
 
 def _config_file():
@@ -107,6 +147,10 @@ def _embed_dims_guard(store, dims):
 
 def build_memory(cfg, llm_override=None):
     from mem0 import Memory
+    global _telemetry_checked
+    if not _telemetry_checked:
+        _telemetry_checked = True
+        _force_telemetry_off()
     llm = llm_override or (cfg.get('llm') or {})
     emb = cfg.get('embedder') or {}
     store = cfg.get('store_path') or os.path.join(HERE, 'mem0-store')
@@ -135,7 +179,9 @@ def build_memory(cfg, llm_override=None):
             'embedding_dims': emb_dims,
         }
     config = {
-        'telemetry': False,  # 她的记忆不出门：关掉 mem0 内置遥测
+        # 注意：mem0 的配置里没有 telemetry 这个字段（会被 pydantic 静默丢弃），写在这里只是留个说明。
+        # 真正关掉遥测靠进程环境变量 MEM0_TELEMETRY，见本文件顶部；改动别只改这一行。
+        'telemetry': False,
         'llm': {
             'provider': 'openai',
             'config': {
@@ -241,11 +287,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
-        self.send_response(code)
-        self.send_header('content-type', 'application/json; charset=utf-8')
-        self.send_header('content-length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header('content-type', 'application/json; charset=utf-8')
+            self.send_header('content-length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionError, ConnectionAbortedError):
+            # 客户端提前断开（超时/取消/浏览器关页）——不是错误。
+            # 不接住它的话，socketserver 每个请求都刷一段 40 行 traceback，把真错误淹掉（实测 3 处/天）。
+            pass
 
     def _body(self):
         n = int(self.headers.get('content-length') or 0)
@@ -495,10 +546,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {'ok': False, 'error': str(e)})
 
 
+class _Server(ThreadingHTTPServer):
+    """客户端中途断开（超时/取消/关页面）不是错误。
+
+    默认的 handle_error 会对每一次断开 print 一整段 40 行 traceback（实测一天十几处），
+    把真正的报错淹掉。这里只吞掉"连接类"异常，其它异常照旧完整打印。
+    """
+
+    def handle_error(self, request, client_address):  # noqa: N802
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     print('[mem] 她的记忆引擎（mem0 sidecar）启动中，端口 ' + str(PORT) + ' ...')
     print('[mem] 首次调用会初始化 faiss + bge-m3，可能要几秒；提炼模型走云端。')
-    srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    srv = _Server(('127.0.0.1', PORT), Handler)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

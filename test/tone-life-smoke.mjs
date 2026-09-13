@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Life, windowOf, windowPhase, inWindowAt } from '../src/life.js';
-import { stageToneOf, proactiveLimitOf, proactiveLimit, toneForToday, DEFAULT_TONE, Soul } from '../src/soul.js';
+import { proactiveLimit, toneForToday, DEFAULT_TONE, Soul } from '../src/soul.js';
 
 let pass = 0, fail = 0;
 const ok = (c, n) => { if (c) { pass++; console.log('✅ ' + n); } else { fail++; console.log('❌ ' + n); } };
@@ -72,10 +72,6 @@ ok(sentKinds.length === 0, '亲密度 0（刚认识）：她完全不主动（' 
 const st2 = JSON.parse(fs.readFileSync(path.join(dir, 'life-state.json'), 'utf8'));
 ok(st2.skipped && /按她的节奏/.test(String(st2.skipped.poke || '')), '被限流时写明原因（不再提亲密度）：' + String(st2.skipped.poke).slice(0, 40));
 
-// 熟人（20~40）：每天最多 1 条分享
-ok(proactiveLimitOf(10).pokes === 0 && proactiveLimitOf(30).pokes === 1 && proactiveLimitOf(50).pokes === 2 && proactiveLimitOf(60).pokes === 3, '主动上限随关系递增：0/1/2/3');
-ok(proactiveLimitOf(80) === null, '足够熟（≥70）→ 不再额外限制，按后台配置走');
-
 // ── 第三次改版：分寸与主动上限不再由亲密度决定，改由世界引擎的 tone 决定 ──
 const defLim = proactiveLimit(null);
 ok(defLim.morning === true && defLim.night === true && defLim.pokes === 3, '世界引擎没给分寸时：默认放开到按后台配置走（不再因刚认识就封杀）');
@@ -87,12 +83,9 @@ const t2 = toneForToday({ forDate: '2026-09-12', tone: { address: '旧的' } }, 
 ok(t2.source === 'default' && !/旧的/.test(t2.address), '世界引擎给的分寸过期 → 自动作废回默认（不会拿昨天的分寸说今天的话）');
 ok(DEFAULT_TONE.forbid.length > 0, '默认分寸也带边界（别太热络/别撒娇）');
 
-// ── ④ 分寸表：刚认识必须"客气、不撒娇、不叫昵称" ──
-const t0 = stageToneOf(0), t90 = stageToneOf(90);
-ok(t0.stage === '刚认识' && t0.forbid.includes('撒娇') && t0.forbid.includes('叫昵称/亲爱的'), '刚认识的分寸：禁止撒娇/叫昵称（' + t0.forbid.slice(0, 3).join('、') + '…）');
-ok(t0.intimacy < 20 && t90.intimacy > 80, '熟度随亲密度上升（' + t0.intimacy + ' → ' + t90.intimacy + '）');
-ok(/名字|哎/.test(t0.address), '刚认识的称呼是"名字/哎"，不是亲昵称呼：' + t0.address);
-ok(t90.forbid.length === 0, '恋人阶段不再有硬性禁止项');
+// ── ④ 默认分寸（旧的三档分寸表已随亲密度一起退场：现在由世界引擎的 tone 唯一决定）──
+ok(Array.isArray(DEFAULT_TONE.forbid) && DEFAULT_TONE.forbid.length > 0, '默认分寸带边界（' + DEFAULT_TONE.forbid.slice(0, 2).join('、') + '…）——不认识就该客气');
+ok(/名字|哎/.test(DEFAULT_TONE.address), '默认称呼是"名字/哎"，不是亲昵称呼：' + DEFAULT_TONE.address);
 
 // ── ⑤ 提示词：不能出现"主人"这个角色标签；必须带今天的分寸 ──
 const soul = new Soul({ dir: mk(), router: { chat: async () => ({ content: '嗯' }), cfg: {} }, logger: () => {} });
@@ -126,23 +119,23 @@ ok(!/叫老公/.test(sys3), '昨天/明天的分寸不会被误用（只认 forD
 
 // ── ⑥ 打字节奏与话量（用户反馈"打字快得不像人""话多不像 INTJ"）──
 const soulP = new Soul({ dir: mk(), router: { chat: async () => ({ content: 'x' }), cfg: {} }, logger: () => {} });
-const short = soulP._planDelays(['嗯'], true, 'human', 1);
-const long = soulP._planDelays(['x'.repeat(40)], true, 'human', 1);
+const short = soulP._planDelays(['嗯'], true, 1);
+const long = soulP._planDelays(['x'.repeat(40)], true, 1);
 ok(short[0] >= 400, '看到消息后先等一会儿（≥400ms），不是秒回（' + short[0] + 'ms）');
 ok(long[0] >= 400, '第一条也不是瞬发');
-const twoChunks = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'human', 1);
+const twoChunks = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 1);
 ok(twoChunks.length === 2 && twoChunks[1] > 2000, '第二条要等"打完第一条"的时间（30 字 → ' + twoChunks[1] + 'ms）');
 ok(twoChunks[1] > short[0], '越长的消息等得越久（按字数算，不再固定几百毫秒）');
-ok(soulP._planDelays(['x'.repeat(200)], true, 'human', 1)[1] === undefined && soulP._planDelays(['x'.repeat(200), 'y'], true, 'human', 1)[1] <= 12000, '单条等待有上限（≤12 秒），不会等到天荒地老');
-const fast = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'instant', 1);
-const slow = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'slow', 1);
-ok(fast[0] < slow[0] * 0.6, '回复速度三档真的有区别（instant ' + fast[0] + 'ms / slow ' + slow[0] + 'ms）');
+ok(soulP._planDelays(['x'.repeat(200)], true, 1)[1] === undefined && soulP._planDelays(['x'.repeat(200), 'y'], true, 1)[1] <= 12000, '单条等待有上限（≤12 秒），不会等到天荒地老');
+const fastK = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 2);
+const slowK = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 0.5);
+ok(fastK[1] < slowK[1] * 0.6, '手速滑杆方向正确：越大越快（×2 → ' + fastK[1] + 'ms ／ ×0.5 → ' + slowK[1] + 'ms）');
 
 const planIntj = soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, null, 0);
 const planWarm = soulP._talkPlan({ traits: { initiative: 80, warmth: 85 } }, null, 60);
 ok(planIntj.maxChunks <= 2 && planIntj.maxChars <= 32, 'INTJ 型（温度/发起力低）话不多：最多 ' + planIntj.maxChunks + ' 条 / ' + planIntj.maxChars + ' 字');
 ok(planWarm.maxChunks >= 3 && planWarm.maxChars > planIntj.maxChars, '外向热情型可以说更多（' + planWarm.maxChunks + ' 条 / ' + planWarm.maxChars + ' 字）');
-ok(soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, { chunks: 3, maxChars: 50 }, 30).maxChunks === 3, '世界引擎给的话量可以覆盖性格默认值');
+ok(soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, { talkDelta: 30 }, 30).maxChunks >= soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, null, 30).maxChunks, '世界引擎给的当天话量修饰真的起作用（话量只有这一条档位）');
 // 提示词里必须写清"最多几条/每条几个字"，否则模型还是会长篇大论
 const sysTalk = soulP._systemPrompt({
   persona: { name: '苏镜语', traits: { initiative: 44, warmth: 25 }, quirks: {}, interests: [], assessments: {}, relationship: {} },
@@ -176,10 +169,10 @@ const sysNoWho = soulP._systemPrompt({
   ownerProfile: { name: '阿泽', basic: '杭州，做后端开发，经常加班；不喝咖啡，喜欢猫。' },
 });
 ok(!/关于他/.test(sysNoWho) && !/别装不认识/.test(sysNoWho), '「他是谁」已退场：即使传了 ownerProfile 也不再进提示词');
-const fastD = soulP._planDelays(['x'.repeat(20), 'y'.repeat(20)], true, 'human', 1, 2);
-const slowD = soulP._planDelays(['x'.repeat(20), 'y'.repeat(20)], true, 'human', 1, 0.5);
+const fastD = soulP._planDelays(['x'.repeat(20), 'y'.repeat(20)], true, 2);
+const slowD = soulP._planDelays(['x'.repeat(20), 'y'.repeat(20)], true, 0.5);
 ok(fastD[0] < slowD[0] && fastD[1] < slowD[1], '手速倍率真的生效（×2 → ' + fastD[1] + 'ms ／ ×0.5 → ' + slowD[1] + 'ms）');
-const d30 = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 'human', 1, 1)[1];
+const d30 = soulP._planDelays(['x'.repeat(30), 'y'.repeat(30)], true, 1)[1];
 ok(d30 < 4500, '默认手速下 30 字等待 <4.5 秒（实测 ' + d30 + 'ms；旧版要 5.5 秒以上）');
 ok(soulP._talkPlan({ traits: { initiative: 44, warmth: 25 } }, null, 62).maxChars >= 28, 'INTJ 的话量放宽到至少 28 字（不再憋成半句）');
 

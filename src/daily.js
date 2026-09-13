@@ -8,12 +8,12 @@ import path from 'node:path';
 import { JOB_TYPES } from './job.js';
 export { JOB_TYPES };
 
-function hashStr(s) {
+export function hashStr(s) {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
-function mulberry32(seed) {
+export function mulberry32(seed) {
   let a = seed;
   return function () {
     a |= 0; a = (a + 0x6D2B79F5) | 0;
@@ -31,6 +31,8 @@ function hmAdd(hmStr, deltaMin) {
 const hm2min = (s) => { const p = String(s || '0:0').split(':'); return Number(p[0]) * 60 + Number(p[1] || 0); };
 const min2hm = (m) => { const x = ((Math.round(m) % 1440) + 1440) % 1440; return String(Math.floor(x / 60)).padStart(2, '0') + ':' + String(x % 60).padStart(2, '0'); };
 
+import { bodyView, bodyEffects } from './body-state.js';
+
 function dayKey(now) {
   const y = now.getFullYear(); const m = String(now.getMonth() + 1).padStart(2, '0'); const d = String(now.getDate()).padStart(2, '0');
   return y + '-' + m + '-' + d;
@@ -41,7 +43,32 @@ function dayKey(now) {
   const key = dayKey(now);
   let prev = null;
   try { prev = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
-  if (prev && prev.date === key) return prev;
+  if (prev && prev.date === key) {
+    let dirty = false;
+    // 世界引擎是作息的权威：今天补生成过剧本（剧本 forDate === 今天）时，把 wake/sleep 跟着刷新一次。
+    // 否则"两处存同一件事"：剧本写 01:00 睡，她还按播种时的旧值 01:20 判睡眠、写进提示词（2026-09-14 真机实测）。
+    try {
+      const ws1 = JSON.parse(fs.readFileSync(path.join(companionDir, 'world-state.json'), 'utf8'));
+      if (ws1 && ws1.forDate === key) {
+        if (ws1.wake && ws1.wake !== prev.wake) { prev.wake = ws1.wake; dirty = true; }
+        if (ws1.sleep && ws1.sleep !== prev.sleep) { prev.sleep = ws1.sleep; dirty = true; }
+      }
+    } catch { /* 还没有世界剧本就算了 */ }
+    // 身体状态是**派生**的：老状态里没有 body 时按需补算一次。
+    // （不补的话，功能上线当天她一整天没有身体状态、后台卡片也是空的——等明天才出现。）
+    if (prev.body === undefined) {
+      try {
+        const ws0 = JSON.parse(fs.readFileSync(path.join(companionDir, 'world-state.json'), 'utf8'));
+        const inti = Number((ws0 && ws0.tone && ws0.tone.intimacy) == null ? 0 : ws0.tone.intimacy) || 0;
+        const tr0 = persona.traits || {};
+        const bv = bodyView({ dir: companionDir, today: { date: key, __fingerprint: String(tr0.socialBattery || '') + String(persona.name || '') }, world: ws0, intimacy: inti });
+        prev.body = bv ? { period: bv.period, daily: bv.daily, lowEnergy: bv.lowEnergy, disclosureTier: bv.disclosureTier, note: bv.note, source: bv.source } : null;
+      } catch { prev.body = null; }
+      dirty = true;
+    }
+    if (dirty) { try { fs.writeFileSync(file, JSON.stringify(prev, null, 2), 'utf8'); } catch { /* 写不进去也不影响她 */ } }
+    return prev;
+  }
 
   const traits = persona.traits || {};
   const B = persona.behavior || {};
@@ -123,8 +150,6 @@ function dayKey(now) {
   const prevMood = prev && typeof prev.mood === 'number' ? prev.mood : 60;
   const moodBase = world && typeof world.mood === 'number' ? world.mood : prevMood;
   const mood = Math.round(Math.min(95, Math.max(20, moodBase + (rnd() * 2 - 1) * (world ? 6 : 14))));
-  const chatter = Math.round((0.7 + rnd() * 0.6) * 100) / 100;
-  const speedState = Math.round((0.8 + rnd() * 0.5) * 100) / 100;
   const interests = persona.interests || [];
   const focus = (world && world.focus) || (interests.length ? interests[Math.floor(rnd() * interests.length)] : '');
 
@@ -136,8 +161,6 @@ function dayKey(now) {
   else if (nightOwl) events.push('今晚有点兴奋');
   if (isWeekend) events.push('周末');
   if (busyDay) events.push('今天出门办事');
-  if (mood >= 75) events.push('今天心情很好');
-  if (mood <= 35) events.push('今天有点低落');
 
   // 六维每日弹性（有因果、围绕基准回弹）：事件和心情决定漂移方向，不是乱摇。
   // 只动"今天的六维"，人设基准与MBTI八维推导永不变——像情绪围绕性格波动。
@@ -154,19 +177,33 @@ function dayKey(now) {
     dr.socialBattery -= Math.round((3 + rnd() * 3) * jScale);
     dr.initiative -= Math.round(2 * jScale);
   }
+  // 她的身体（批 E3 / A10）：生理期与昨晚的睡眠/小毛病都只通过"电量与六维"传导，
+  // 不新增任何机制（电量低→少主动、慢打字、话短，全是既有管道）。
+  let body = null;
+  try {
+    const intimacyNow = Number((world && world.tone && world.tone.intimacy) == null ? 0 : (world.tone.intimacy)) || 0;
+    body = bodyView({ dir: companionDir, today: { date: key, __fingerprint: String((traits && traits.socialBattery) || '') + String((persona && persona.name) || '') }, world: wsAny, intimacy: intimacyNow });
+    if (body) {
+      const eff = bodyEffects(body);
+      for (const k of Object.keys(eff.dr)) dr[k] = (dr[k] || 0) + eff.dr[k];
+      body.__battery = eff.battery;
+      body.__activeMul = eff.activeMul;
+    }
+  } catch { /* 身体模块出问题绝不影响今天的她 */ }
   for (const k of Object.keys(dr)) dr[k] = Math.max(-15, Math.min(15, dr[k]));
 
   // 今日电量由"漂移后的社交电量"决定（六维驱动行为）
   const baseB = traits.socialBattery == null ? 50 : traits.socialBattery;
-  const battery = Math.round(Math.min(95, Math.max(10, baseB + dr.socialBattery + (rnd() * 2 - 1) * 10)));
+  const battery = Math.round(Math.min(95, Math.max(10, baseB + dr.socialBattery + (rnd() * 2 - 1) * 10 + ((body && body.__battery) || 0))));
   // 发起力驱动主动频率（六维驱动行为）：发起力高今天更爱找你
   const iniV = (traits.initiative == null ? 50 : traits.initiative) + dr.initiative;
-  const activeToday = Math.max(0, Math.round((B.activePerDay == null ? 3 : B.activePerDay) * (0.5 + rnd() * 0.9) * (0.7 + (iniV / 100) * 0.6)));
+  const activeToday = Math.max(0, Math.round((B.activePerDay == null ? 3 : B.activePerDay) * (0.5 + rnd() * 0.9) * (0.7 + (iniV / 100) * 0.6) * ((body && body.__activeMul) || 1)));
 
   const state = {
     date: key, wake, sleep, allNighter, nightOwl, weekend: isWeekend, busyDay,
-    mood, chatter, speedState, battery, activeToday, focus, events, worldAuthored, traitDrift: dr,
+    mood, battery, activeToday, focus, events, worldAuthored, traitDrift: dr,
     rhythmFrom: rhythmFrom, rhythmNote: rhythmNote,
+    body: body ? { period: body.period, daily: body.daily, lowEnergy: body.lowEnergy, disclosureTier: body.disclosureTier, note: body.note, source: body.source } : null,
     job: J ? { type: J.type, label: jt.label, workday: !!isWorkday, intensity: jobIntensity, workStart: J.workStart || '', workEnd: J.workEnd || '', source: J.source || (cfgJob ? 'config' : '') } : null,
     generatedAt: Date.now(),
   };

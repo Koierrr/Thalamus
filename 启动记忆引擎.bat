@@ -1,4 +1,13 @@
 @echo off
+rem 她的记忆不出门：进程级关掉所有已知遥测（只写 config 不够）
+set PYTHONUNBUFFERED=1
+set MEM0_TELEMETRY=False
+set ANONYMIZED_TELEMETRY=False
+set CHROMA_TELEMETRY=False
+set DO_NOT_TRACK=1
+set HF_HUB_DISABLE_TELEMETRY=1
+set SCARF_NO_ANALYTICS=true
+
 chcp 65001 >nul
 title Her Memory Engine (mem0 sidecar :43122)
 set "MEMORY_SERVICE_CONFIG=%USERPROFILE%\.dsh\wechat-companion\memory-service.json"

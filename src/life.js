@@ -1,6 +1,8 @@
 // life.js — 她的生活调度器
 // 作息表 + 早晚安 + 日常分享（pokes）+ "等急了"升级链（nudge）。
 // 所有触发按"日期+种类"去重（重启不重复发），抖动按日期确定性计算（像真人一样不整点发）。
+import { gate, record, gateLine, rollDay } from './proactive-gate.js';
+
 // 本模块只决定"什么时候发什么"，怎么生成（soul.proactive）和怎么送出（sendToOwner）由外部注入。
 //
 // 2026-09-12 修复（"下午两点她说晚安"）：
@@ -20,6 +22,12 @@ function dayKey(now) {
 }
 function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 const wrap = (m) => ((Math.round(m) % 1440) + 1440) % 1440;
+// 数值配置读法：填了 0 就是 0（0 在这些项里是有效设置），没填/填了不是数字才回落默认值。
+// 以前写成 `Number(x) || 默认值`，于是后台填 0 会被悄悄改成 1~2，界面上看不出来。
+function numOr(v, dflt) {
+  if (v == null || v === '' || !isFinite(Number(v))) return dflt;
+  return Math.max(0, Number(v));
+}
 
 /**
  * 把"中心时刻 + 前后留白"变成一个跨天安全的区间。
@@ -86,10 +94,14 @@ export class Life {
       morningOn: c.morningOn !== false,
       nightOn: c.nightOn !== false,
       insomnia: c.insomnia === true,   // 今晚失不失眠（世界引擎写，决定她说了晚安后还醒多久）
-      pokesPerDay: Number(c.pokesPerDay) || 2,
+      // 「后台填 0 就是 0」：0 = 今天不主动 / 不来催。只有没填或填了不是数字才回落默认值。
+      pokesPerDay: numOr(c.pokesPerDay, 2),
       pokeWindow: Array.isArray(c.pokeWindow) && c.pokeWindow.length === 2 ? c.pokeWindow : ['10:00', '22:00'],
       nudgeMinutes: Number(c.nudgeMinutes) || 20,
-      nudgeMaxPerDay: Number(c.nudgeMaxPerDay) || 1,
+      nudgeMaxPerDay: numOr(c.nudgeMaxPerDay, 1),
+      // N2 主动性闸门：两条主动之间至少隔多久（分钟）——统一一个间隔，不再每类各一套
+      // 0 是有效值（= 不冷却），只有"没填 / 填了不是数字"才回落默认值
+      proactiveGapMin: numOr(c.proactiveGapMin, 45),
       // 世界引擎给的主动上限（只能收紧最多几条，不再是配额）
       stageLimit: null,
       // 事件驱动分享要用的输入（index.js 注入）
@@ -127,6 +139,26 @@ export class Life {
    * 她今天有多想说话（0~1）——主动分享的"冲动门"。
    * 由性格（发起力/依恋）+ 当天社交电量 + 心情决定：电量低、心情差 → 她今天就是不想理人。
    */
+  /** 后台展示用：闸门现在什么状态（今天用了几次 / 距上次多久 / 上次为什么没发） */
+  gateView(now = new Date(), overrides = {}) {
+    try {
+      const s = this._state();
+      // 必须接受与心跳同一份 overrides（尤其是世界引擎给的主动上限）：
+      // 否则后台显示"今天主动 0/12 次"、实际生效却是 0/0（世界引擎说今天不主动），两边数不一样就成了黑盒。
+      const cfg = { ...this.cfgLife(), ...(overrides || {}) };
+      const lim = cfg.stageLimit || null;
+      const maxPokes = lim && lim.pokes != null ? Math.min(cfg.pokesPerDay, lim.pokes) : (lim ? 0 : cfg.pokesPerDay);
+      const maxNudges = lim && lim.nudges != null ? Math.min(cfg.nudgeMaxPerDay, lim.nudges) : (lim ? 0 : cfg.nudgeMaxPerDay);
+      const budget = Math.max(0, maxPokes) + Math.max(0, maxNudges);
+      return {
+        line: gateLine(s.gateDay, budget, s.lastProactiveAt, now.getTime()),
+        gapMin: cfg.proactiveGapMin,
+        budget,
+        skipped: s.skipped || {},
+      };
+    } catch { return null; }
+  }
+
   _impulse(cfg = {}) {
     const t = cfg.traits || {};
     const num = (v, d) => (v == null || !isFinite(Number(v)) ? d : Number(v));
@@ -239,13 +271,6 @@ export class Life {
     return A <= B ? (cur >= A && cur <= B) : (cur >= A || cur <= B);
   }
 
-  /** 安静时段（她不该打扰你的时间） */
-  isQuiet(now, quietHours) {
-    const m = /^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/.exec(String(quietHours || '').trim());
-    if (!m) return false;
-    return this._inWindow(now, [m[1], m[2]]);
-  }
-
   /**
    * 心跳：每次调用检查所有触发。now 可注入（测试用）。
    * 返回实际发出的消息列表 [{kind, text}]。
@@ -285,6 +310,24 @@ export class Life {
 
     const skip = (what, why) => { s.skipped = { ...(s.skipped || {}), [what]: why }; };
 
+    // ── 主动性闸门（N2）：**唯一**判定"她该不该主动找你"的地方 ──
+    // 三道关按序：①该不该（睡着/世界引擎说今天不做/不在时间窗）②距上一条够不够久 ③今天还有没有额度（分享与催共用一本账）
+    // 判定失败的原因写进 skip()，后台看得见（禁黑盒：没发也要能说清为什么没发）
+    const gateBudget = Math.max(0, maxPokes) + Math.max(0, maxNudges);
+    const checkGate = (kind, extra = {}) => gate({
+      kind,
+      day: s.gateDay,
+      dayKey: dayKey(now),
+      budget: gateBudget,
+      gapMin: cfg.proactiveGapMin,
+      // 同时看旧字段 lastPokeAt：她现有的状态里只有它（部署后冷却立刻生效，不用等第一次主动）
+      lastAt: Math.max(Number(s.lastProactiveAt) || 0, Number(s.lastPokeAt) || 0),
+      asleep: false,   // 睡着了在上面已经整段返回了
+      allowed: extra.allowed,
+      inWindow: extra.inWindow,
+      now: now.getTime(),
+    });
+
     // ── 她已经睡着了：一条主动消息都不发（2026-09-13 起不依赖"发过晚安"）──
     if (this.isAsleepNow(now, cfg)) {
       if (s.bedPhase !== 'asleep') { s.bedPhase = 'asleep'; s.bedAt = s.bedAt || now.getTime(); this._save(s); }
@@ -294,13 +337,35 @@ export class Life {
     }
 
     const doSend = async (kind, extra = {}) => {
-      const r = await soul.proactive(kind, extra);
+      // 复读止血（批 E1 / A9）：把"她最近说过的"带给她——重复时她会换一件事；
+      // 实在换不出来就**这条不发**（宁可这次不主动，也别当复读机）。
+      let chain = [];
+      try { chain = (this._cfgGet().chain || {}).memory || []; } catch { /* noop */ }
+      const r = await soul.proactive(kind, { ...extra, recentSaid: s.saidRecent || [], chain });
+      if (r && r.skipped === 'repeat') return skip(kind, '这次想说的又是同一件事（她最近已经说过），这条先不发');
       for (let i = 0; i < r.chunks.length; i++) {
         const d = i < r.delaysMs.length ? Math.min(r.delaysMs[i], 4000) : 500;
         if (d > 0) await new Promise((res) => setTimeout(res, d));
         await sendToOwner(String(r.chunks[i]).slice(0, 2000));
         sent.push({ kind, text: r.chunks[i] });
       }
+      // 记下她这次说了什么（留最近 30 条 / 7 天），下次发送前拿它判重
+      try {
+        const text = r.chunks.join(' ');
+        if (text) {
+          const keep = (s.saidRecent || []).filter((x) => x && Date.now() - (x.at || 0) < 7 * 86400000).slice(-29);
+          keep.push({ at: Date.now(), text });
+          s.saidRecent = keep;
+          this._save(s);
+        }
+      } catch { /* 记账失败不影响发送 */ }
+      // N2：发出去了才记账（分享与催共用一本当天账；早安/晚安属作息，不占这本账）
+      try {
+        const rec = record(s.gateDay, kind, now.getTime());   // 用这一跳的 now，不用 Date.now()（回放/时钟跳时才算得对）
+        s.gateDay = rec.day;
+        s.lastProactiveAt = rec.lastAt;
+        this._save(s);
+      } catch { /* 记账失败不影响发送 */ }
     };
 
     // ── 早安：起床时刻 ±25min 抖动；窗口 = 起床后 90 分钟内（错过不补发）──
@@ -308,7 +373,9 @@ export class Life {
       const target = hm(cfg.wake) + this._jitterFor('morning', now, 25);
       const ph = absWindowPhase(now, target, 0, 90);
       if (ph === 'in') {
-        await doSend('morning'); s.morning = true; this._save(s);
+        const gd = checkGate('morning', { allowed: allowMorning, inWindow: true });
+        if (!gd.ok) { skip('morning', gd.why); this._save(s); }
+        else { await doSend('morning'); s.morning = true; this._save(s); }
       } else if (ph === 'after') {
         s.morning = true;
         skip('morning', '错过了早安窗口（起床后 90 分钟里电脑没在跑）——不补发，免得下午才说早安');
@@ -316,7 +383,7 @@ export class Life {
       }
     } else if (!allowMorning && !s.morning) {
       s.morning = true;
-      skip('morning', '这次先不主动（按她的节奏）' + '（亲密度 ' + (lim && lim.affection != null ? lim.affection : '?') + '）');
+      skip('morning', '这次先不主动（按她的节奏来）');
       this._save(s);
     }
 
@@ -330,7 +397,9 @@ export class Life {
       // 只在她睡着**之前**发（睡后就发不出晚安了）：窗口 = 睡前 90 分钟 ~ 睡前 +15 分钟（那 15 分钟是容错）
       const ph = absWindowPhase(now, target, crossMidnight ? 90 : 90, 15, crossMidnight ? sleepMin : null);
       if (ph === 'in') {
-        await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, cfg)); this._save(s);
+        const gd = checkGate('night', { allowed: allowNight, inWindow: true });
+        if (!gd.ok) { skip('night', gd.why); this._save(s); }
+        else { await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, cfg)); this._save(s); }
       } else if (ph === 'after') {
         s.night = true;
         skip('night', '错过了晚安窗口（睡前 90 分钟内电脑没在跑）——不补发：她睡着以后不能再发晚安');
@@ -352,7 +421,12 @@ export class Life {
     //   ② 要不要说这件事，**当天掷一次骰子定死**（不是每分钟重掷，否则变成抽奖机）；
     //   ③ 说过一条之后，冷却 60±30 分钟（即实际 30~90 分钟，随机）——只防连发，不是配额；
     //   ④ "最多几条"只是天花板，不再需要发满。
-    if (maxPokes > 0 && s.pokes < maxPokes) {
+    // 「日常分享时段」（后台「她 → 生活节奏 → 主动消息」可设；00:00-00:00 = 全天不限制）。
+    // 以前这个设置存了但没有任何地方读（_inWindow 是死代码）＝黑盒：用户改了没反应。
+    if (maxPokes > 0 && s.pokes < maxPokes && !this._inWindow(now, cfg.pokeWindow)) {
+      skip('poke', '现在不在你设的日常分享时段（' + cfg.pokeWindow[0] + '~' + cfg.pokeWindow[1] + '）');
+      this._save(s);
+    } else if (maxPokes > 0 && s.pokes < maxPokes) {
       const flow = Array.isArray(cfg.flow) ? cfg.flow : [];
       s.usedFlow = s.usedFlow || {};
       const coolMin = 60 + this._jitterFor('cool' + s.pokes, now, 30); // 30 ~ 90 分钟
@@ -367,10 +441,8 @@ export class Life {
         const roll = this._unitFor('say' + i, now);
         // 今天不想说这件事 → 记下来，继续看下一件（不能 break：那样第一件不想说就再也不会看后面的）
         if (roll > impulse) { s.usedFlow[i] = -1; this._save(s); continue; }
-        if (sinceLast < coolMin) {
-          skip('poke', '她还有件事想说，但刚发过一条（冷却 ' + Math.round(coolMin) + ' 分钟）');
-          break;
-        }
+        const gd = checkGate('poke', { allowed: true, inWindow: true });
+        if (!gd.ok) { skip('poke', gd.why); break; }
         // 世界引擎说了"她大概什么时候想找他" → 差得太远就先不主动（她开庭/上班时不会来找你）
         const pAt = this._parseProactiveAt(cfg.proactiveAt);
         if (pAt != null) {
@@ -400,7 +472,7 @@ export class Life {
       try {
         const bdir = path.join(this.dir, '..', 'wechat-companion-backups', dayKey(now));
         fs.mkdirSync(bdir, { recursive: true });
-        for (const f of ['persona.json', 'memory.json', 'relations.json', 'life-state.json', 'world-state.json', 'evolution.json', 'daily-state.json', 'deform-state.json', 'workshop-sessions.json', 'config.json', 'state.json', 'memory-meta.json', 'memory-service.json']) {
+        for (const f of ['persona.json', 'memory.json', 'relations.json', 'life-state.json', 'promises.json', 'world-state.json', 'evolution.json', 'daily-state.json', 'deform-state.json', 'workshop-sessions.json', 'config.json', 'state.json', 'memory-meta.json', 'memory-service.json']) {
           try { fs.copyFileSync(path.join(this.dir, f), path.join(bdir, f)); } catch {}
         }
         for (const d of ['moments', 'mem0-store', 'avatar', 'album']) {
@@ -433,6 +505,8 @@ export class Life {
     if (maxNudges > 0 && s.pendingSince && s.nudges < maxNudges) {
       const waitedMin = (Date.now() - s.pendingSince) / 60000;
       if (waitedMin >= cfg.nudgeMinutes) {
+        const gd = checkGate('nudge', { allowed: true, inWindow: true });
+        if (!gd.ok) { skip('nudge', gd.why); this._save(s); return; }
         await doSend('nudge');
         s.nudges += 1;
         delete s.pendingSince;

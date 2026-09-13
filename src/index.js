@@ -38,6 +38,10 @@ import {
 import { encodeWeixinChatId, decodeWeixinChatId } from './weixin-ids.js';
 import { ERRCODE_SESSION_EXPIRED } from './weixin-types.js';
 import { downloadMediaFromItem, uploadMediaToCdn } from './weixin-media.js';
+import { filterCommands, emptyUsage, usageLine, CMD_KIND } from './commands.js';
+import { matchStickerName, readSticker, listStickers, addSticker, removeSticker, setStickerEnabled } from './stickers.js';
+import { Promises } from './promises.js';
+import { longingCurve, longingLine } from './longing.js';
 import { birthdayInfo } from './birthday.js';
 import { parseInboundText } from './inbound.js';
 import { proactiveLimit, toneForToday, nowDoing, COMMON_SENSE } from './soul.js';
@@ -227,6 +231,14 @@ class WeixinBridgeService {
       logger: (m) => this.ctx.logger?.info?.(m),
     });
     this.life = new Life({ dir: this.companionDir, config: () => this._modelConfig(), logger: (m) => this.ctx.logger?.info?.(m) });
+    // 承诺闭环（批 E3 / A8）：到期职责的唯一权威；独立状态文件，复用现有 60 秒心跳
+    this.promises = new Promises({
+      dir: this.companionDir,
+      soul: this.soul,
+      config: () => this._modelConfig(),
+      logger: (m) => this.ctx.logger?.info?.(m),
+      activity: (t) => this.activity(t),
+    });
     this.moments = new MomentsWorkshop({ dir: this.companionDir, router: () => this.router, soul: this.soul, config: () => this._modelConfig(), logger: (m) => this.ctx.logger?.info?.(m) });
     this.workshop = new PersonaWorkshop({ soul: this.soul, router: () => this.router, config: () => this._modelConfig(), sessionFile: path.join(this.companionDir, 'workshop-sessions.json'), logger: (m) => this.ctx.logger?.info?.(m) });
     this.world = new WorldEngine({ dir: this.companionDir, router: () => this.router, config: () => this._modelConfig(), soul: this.soul, logger: (m) => this.ctx.logger?.info?.(m) });
@@ -775,13 +787,34 @@ class WeixinBridgeService {
   }
 
   // ---------- 生活系统（主动消息心跳） ----------
+  /**
+   * 世界引擎给的「今天主动上限」（只收紧"日常分享/催你"的条数，早安/晚安永远允许）。
+   * **心跳与后台显示必须走同一个方法**：以前心跳里现算一份、后台读的是原始配置（pokesPerDay+nudgeMaxPerDay），
+   * 于是后台显示"今天主动 0/12 次"而实际生效是 0/0 —— 数不一样就是黑盒。
+   */
+  _stageLimitNow(tone) {
+    return { ...proactiveLimit(tone), morning: true, night: true };
+  }
+
   async _lifeTick() {
     try {
       if (!this.running || !this._soulEnabled()) return;
       const cfg = this._modelConfig();
       if (cfg.paused || !cfg.ownerPeerId) return;
       if (cfg.life && cfg.life.enabled === false) return;
+      // 今天的她（必须放在最前面：下面承诺到期检查要用 today.wake / today.sleep。
+      // 2026-09-14 真机抓到的 bug：这两处写在 const today 之前 → 每跳都抛 "Cannot access 'today' before initialization"，
+      // 整条心跳（早安/晚安/分享/催/承诺/记忆补迁）全废，且只在日志里留一行 warn。）
       const today = this.today();
+      // 她夹带的「晚点再说」到点了就发出去（批 E2 / A5）
+      void this._nudgesTick();
+      // 她答应过的事到期了没有（批 E3 / A8）：在睡就推到起床后，每条只主动提一次
+      void this.promises.tick({
+        isAsleep: () => (this.life && this.life.isAsleepNow ? this.life.isAsleepNow(new Date(), { wake: today.wake, sleep: today.sleep }) : false),
+        wake: today.wake,
+        lastPokeAt: this._lastPokeAt(),
+        send: (chunks, delays) => this._sendToOwnerChunks(chunks, delays),
+      }).catch((e) => this.ctx.logger?.warn?.('[promises] tick 异常: ' + (e && e.message)));
       this.deform.daily(today); // 每日衰减/通宵事件
       if (!today.allNighter) this._dayEvent('rest', '睡得好');
       // 世界引擎：她睡了才为她的世界转起来（每晚一次）
@@ -805,7 +838,7 @@ class WeixinBridgeService {
           // 世界引擎给的主动上限（只能收紧"最多几条"，不再是配额）。
           // 但早安/晚安**永远允许**（2026-09-13 用户拍板）：那是"她还活着"的基本盘，
           // 世界引擎只准管"日常分享/催你"的次数，不准让她一整天不吭声。
-          stageLimit: { ...proactiveLimit(toneNow), morning: true, night: true },
+          stageLimit: this._stageLimitNow(toneNow),
           proactiveAt: toneNow.source === 'world' ? String(toneNow.proactiveAt || '') : '',
           insomnia: toneNow.source === 'world' ? toneNow.insomnia === true : false,
           // 事件驱动分享要用的输入（2026-09-13 方案 D）：
@@ -816,7 +849,8 @@ class WeixinBridgeService {
         },
         sendToOwner: (text) => this._sendToOwnerPeer(cfg.ownerPeerId, text),
       });
-      if (sent.some((x) => x.kind === 'nudge')) this._dayEvent('ignored', '她催你，你没回'); // 催过=被冷落记一笔
+      // A11：以前这里是「每催一次就记一笔压力 +15」，等于你越不来她越黏你（用户否掉了）。
+      // 现在改成「回来那一刻才算总账」：见 _driveSoulOnce 里按想念曲线只结算一次。
       for (const item of sent) { this.ctx.logger?.info?.('[life] 主动消息(' + item.kind + '): ' + item.text.slice(0, 40)); this.activity('[主动·' + item.kind + '] ' + item.text.slice(0, 50)); }
     } catch (err) {
       this.ctx.logger?.warn?.('[life] 心跳失败(下轮再试): ' + (err && err.message));
@@ -856,6 +890,221 @@ class WeixinBridgeService {
     };
     const item = { type: 3, voice_item: { media, voice_length: Math.max(1000, Math.round(durationMs)), len: String(uploaded.fileSize) } };
     await sendMessage(creds, peer, [item], contextToken);
+  }
+
+  /** 发一张图片：和发语音同一条上传链路，item 类型换成 image（通道本来就支持接收/发送图片） */
+  async _sendImageMessage(accountId, peer, data) {
+    const account = this.store.getAccount(accountId);
+    if (!account || !account.token) throw new Error('no stored account for ' + accountId);
+    const creds = {
+      botToken: account.token,
+      ilinkBotId: account.account_id,
+      baseUrl: account.base_url || 'https://ilinkai.weixin.qq.com',
+      cdnBaseUrl: account.cdn_base_url || 'https://novac2c.cdn.weixin.qq.com/c2c',
+    };
+    const contextToken = this.store.getContextToken(accountId, peer);
+    if (!contextToken) throw new Error('no context_token for ' + peer);
+    const uploaded = await uploadMediaToCdn(creds, getUploadUrl, data, peer, 'image');
+    const media = { encrypt_query_param: uploaded.encryptQueryParam, aes_key: uploaded.aesKeyBase64, encrypt_type: 1 };
+    // 图片的密钥，接收端优先读十六进制的 aeskey（见 downloadMediaFromItem），所以两种都给
+    let aeskey = '';
+    try { aeskey = Buffer.from(String(uploaded.aesKeyBase64 || ''), 'base64').toString('hex'); } catch { /* noop */ }
+    const item = { type: 2, image_item: { media, aeskey, len: String(uploaded.fileSize) } };
+    await sendMessage(creds, peer, [item], contextToken);
+  }
+
+  /**
+   * 执行她夹带的指令（批 E2 / A5）。
+   * 闸门全在 commands.js：去重 + 每条回复限次 + 每天限次；这里只负责真去做，
+   * 并且**把做没做、为什么没做都记进后台**（禁黑盒：被拦下来也要看得见）。
+   */
+  async _runCommands(commands, peerKey, accountId, opts = {}) {
+    const list = Array.isArray(commands) ? commands : [];
+    if (!list.length) return;
+    const cfg = this._modelConfig();
+    if ((cfg.behavior || {}).commands === false) return;          // 总开关
+    const peer = opts.peer || peerKey.split(':').slice(1).join(':');
+    const dayKey = new Date().toISOString().slice(0, 10);
+    let usage = {};
+    try { usage = JSON.parse(fs.readFileSync(path.join(this.companionDir, 'cmd-usage.json'), 'utf8')); } catch { usage = emptyUsage(dayKey); }
+    const f = filterCommands(list, usage, dayKey);
+    try {
+      const tmp = path.join(this.companionDir, 'cmd-usage.json.tmp-' + Date.now());
+      fs.writeFileSync(tmp, JSON.stringify(f.usage), 'utf8');
+      fs.renameSync(tmp, path.join(this.companionDir, 'cmd-usage.json'));
+    } catch { /* 记账失败不影响执行 */ }
+    for (const d of f.dropped) this.activity('[她想的] ' + (CMD_KIND[d.kind] || d.kind) + '：这次没做（' + d.why + '）');
+    for (const c of f.ok) {
+      try {
+        if (c.kind === 'remember') {
+          await this.soul.addMemory({ who: peerKey, text: c.arg, cat: /^我/.test(c.arg) ? 'her' : 'you' });
+          this.activity('[她想的] 记住了一件事：' + c.arg.slice(0, 40));
+        } else if (c.kind === 'sticker') {
+          const name = matchStickerName(this.companionDir, c.arg);
+          const s = name ? readSticker(this.companionDir, name) : null;
+          if (!s) { this.activity('[她想的] 想发表情包「' + c.arg.slice(0, 12) + '」，但库里没有相近的'); continue; }
+          await this._sendImageMessage(accountId, peer, s.data);
+          this.activity('[她想的] 发了个表情包：' + s.name);
+        } else if (c.kind === 'image') {
+          const out = await this.router.image(c.arg);
+          const first = (out && out[0]) || null;
+          if (!first) throw new Error('生图返回为空');
+          let buf;
+          if (first.b64) buf = Buffer.from(String(first.b64), 'base64');
+          else {
+            const r = await fetch(first.url, { signal: AbortSignal.timeout(60000) });
+            if (!r.ok) throw new Error('图片下载失败 ' + r.status);
+            buf = Buffer.from(await r.arrayBuffer());
+          }
+          await this._sendImageMessage(accountId, peer, buf);
+          this.activity('[她想的] 拍了张照片发给你：' + c.arg.slice(0, 30));
+        } else if (c.kind === 'voice') {
+          const said = String(c.arg).replace(/\s+/g, ' ').slice(0, 160);
+          const audio = await this.router.tts(said);
+          await this._sendVoiceMessage(accountId, peer, audio, Math.min(60000, Math.max(1500, said.length * 230)));
+          this.activity('[她想的] 发了条语音：' + said.slice(0, 30));
+        } else if (c.kind === 'nudge_at') {
+          const t = this._addNudge(c.arg);
+          this.activity('[她想的] 「' + String(c.arg).slice(0, 24) + '」先记着，' + t + ' 再跟你说');
+        }
+      } catch (err) {
+        // 做不成要留痕，不然这就是黑盒
+        this.activity('[她想的] ' + (CMD_KIND[c.kind] || c.kind) + ' 没做成：' + ((err && err.message) || '未知原因').slice(0, 60));
+        this.ctx.logger?.warn?.('[commands] ' + c.kind + ' 执行失败: ' + (err && err.message));
+      }
+    }
+  }
+
+  /** 把她的几条话发给主人（承诺提醒与「晚点再说」共用，别再各写一遍） */
+  async _sendToOwnerChunks(chunks, delays) {
+    const cfg = this._modelConfig();
+    const owner = cfg.ownerPeerId;
+    if (!owner) throw new Error('没配置主人');
+    const account = (this.store.listAccounts ? this.store.listAccounts() : []).find((a) => a && a.enabled !== false && a.token);
+    if (!account) throw new Error('没有可用的账号');
+    const creds = {
+      botToken: account.token,
+      ilinkBotId: account.account_id,
+      baseUrl: account.base_url || 'https://ilinkai.weixin.qq.com',
+      cdnBaseUrl: account.cdn_base_url || 'https://novac2c.cdn.weixin.qq.com/c2c',
+    };
+    const contextToken = this.store.getContextToken(account.account_id, owner);
+    if (!contextToken) throw new Error('还没建立会话（context_token 缺失）');
+    const list = Array.isArray(chunks) ? chunks : [];
+    for (let i = 0; i < list.length; i++) {
+      const d = i < (delays || []).length ? Math.min(Number(delays[i]) || 0, 4000) : (i ? 400 : 0);
+      if (d > 0) await sleep(d);
+      await this._sendChunk(owner, String(list[i]).slice(0, 2000), { creds, peer: owner, contextToken });
+    }
+  }
+  /** 只读借用生活系统的 lastPokeAt（不代它写）——承诺提醒别和日常分享挤在同一分钟 */
+  _lastPokeAt() {
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(this.companionDir, 'life-state.json'), 'utf8'));
+      return Number(s && s.lastPokeAt) || 0;
+    } catch { return 0; }
+  }
+
+  /** 她的"晚点再说"队列：随机 45~180 分钟后，落在她今天醒着的时间里 */
+  _addNudge(text) {
+    const f = path.join(this.companionDir, 'nudges.json');
+    let all = [];
+    try { all = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { all = []; }
+    if (!Array.isArray(all)) all = [];
+    const mins = 45 + Math.floor(Math.random() * 136);
+    const due = Date.now() + mins * 60000;
+    all.push({ text: String(text).slice(0, 200), dueAt: due, madeAt: Date.now() });
+    try {
+      const tmp = f + '.tmp-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(all.slice(-30), null, 2), 'utf8');
+      fs.renameSync(tmp, f);
+    } catch { /* noop */ }
+    return new Date(due).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  /** 到点了就把她"先记着的那句话"发出去（在她醒着、且不在深夜时） */
+  async _nudgesTick() {
+    const f = path.join(this.companionDir, 'nudges.json');
+    let all = [];
+    try { all = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return; }
+    if (!Array.isArray(all) || !all.length) return;
+    const cfg = this._modelConfig();
+    const t0 = this.today() || {};
+    const np = this.life && this.life.nightPhase ? this.life.nightPhase(new Date(), { wake: t0.wake, sleep: t0.sleep }) : 'awake';
+    if (np === 'asleep') return;                       // 她睡了就不发，等醒了再说
+    const now = Date.now();
+    const due = all.filter((x) => x && x.dueAt && x.dueAt <= now);
+    if (!due.length) return;
+    const rest = all.filter((x) => !due.includes(x));
+    const account = (this.store.listAccounts ? this.store.listAccounts() : []).find((a) => a && a.enabled !== false && a.token);
+    const owner = cfg.ownerPeerId;
+    if (!account || !owner) return;
+    const creds = {
+      botToken: account.token,
+      ilinkBotId: account.account_id,
+      baseUrl: account.base_url || 'https://ilinkai.weixin.qq.com',
+      cdnBaseUrl: account.cdn_base_url || 'https://novac2c.cdn.weixin.qq.com/c2c',
+    };
+    const contextToken = this.store.getContextToken(account.account_id, owner);
+    if (!contextToken) return;
+    for (const n of due.slice(0, 2)) {
+      try {
+        await this._sendChunk(owner, String(n.text).slice(0, 500), { creds, peer: owner, contextToken });
+        this.activity('[她想的] 把先前那句说出来了：' + String(n.text).slice(0, 30));
+      } catch (err) {
+        this.ctx.logger?.warn?.('[nudge] 发送失败: ' + (err && err.message));
+        rest.push(n);                                   // 发失败就留着下次再试
+      }
+    }
+    try {
+      const tmp = f + '.tmp-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(rest, null, 2), 'utf8');
+      fs.renameSync(tmp, f);
+    } catch { /* noop */ }
+  }
+
+  /** 你多久没来、她现在的想念状态（只给一句人话，**不给分数**——A12 的要求） */
+  _longingInfo() {
+    const cfg = this._modelConfig();
+    const owner = String(cfg.ownerPeerId || '');
+    if (!owner) return null;
+    const h = this.soul.getHistory(owner);
+    const now = new Date();
+    const absenceMs = this.soul._absenceMs(h, now);
+    const t = (this.soul.getPersona().traits) || {};
+    const tt = this.today() || {};
+    const ww = this.world.state() || {};
+    const curve = longingCurve({ absenceMs, attachment: Number(t.attachment) || 0, battery: Number(tt.battery) || 60, workload: Number(ww.workload) || 0 });
+    return { text: longingLine(curve, { who: '你' }) || '你们刚说过话。', days: Math.round(curve.days * 10) / 10, phase: curve.phase, settledOnReturn: true };
+  }
+
+  /** 她的身体建档信息（后台只读展示用：周期参数与建档说明，禁黑盒） */
+  _bodyStateInfo() {
+    try {
+      const st = JSON.parse(fs.readFileSync(path.join(this.companionDir, 'body-state.json'), 'utf8'));
+      return { cycleDays: st.cycleDays, periodLen: st.periodLen, anchor: st.anchor, createdNote: st.createdNote || '', createdAt: st.createdAt || 0 };
+    } catch { return null; }
+  }
+
+  /** 指令今日用量的文件路径（HTTP 处理函数里不许直接用 path，所以拼装放在方法里） */
+  _cmdUsageFile() { return path.join(this.companionDir, 'cmd-usage.json'); }
+
+  /** 读今天的指令用量（跨天自动归零） */
+  _readCmdUsage() {
+    const dayKey = new Date().toISOString().slice(0, 10);
+    try {
+      const u = JSON.parse(fs.readFileSync(this._cmdUsageFile(), 'utf8'));
+      if (u && u.date === dayKey && u.used && typeof u.used === 'object') return u;
+    } catch { /* 还没用过 */ }
+    return emptyUsage(dayKey);
+  }
+
+  /** 最近她"想做的事"（给后台看；禁黑盒：被拦下的也要看得见） */
+  _recentWanted() {
+    return (Array.isArray(this._activity) ? this._activity : [])
+      .filter((x) => String((x && x.text) || '').indexOf('[她想的]') >= 0)
+      .slice(0, 10)
+      .map((x) => new Date(x.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + ' ' + x.text);
   }
 
   _writeCompanionConfig(next) {
@@ -967,8 +1216,19 @@ class WeixinBridgeService {
     if (b.behavior && typeof b.behavior === 'object') {
       const B = {};
       if (typeof b.behavior.voiceRate === 'number' && b.behavior.voiceRate >= 0 && b.behavior.voiceRate <= 1) B.voiceRate = b.behavior.voiceRate;
-      if (['instant', 'human', 'slow'].includes(b.behavior.replySpeed)) B.replySpeed = b.behavior.replySpeed;
       if (Number.isInteger(b.behavior.chunkMax) && b.behavior.chunkMax >= 1 && b.behavior.chunkMax <= 8) B.chunkMax = b.behavior.chunkMax;
+      // 她的身体（生理期 + 日常身体）默认开；关掉后提示词与电量都不再受影响
+      if (b.body && typeof b.body.enabled === 'boolean') B.body = { enabled: b.body.enabled };
+      // N2：两条主动之间最少隔多久（分钟）——主动性闸门的统一间隔
+      if (b.life && isFinite(Number(b.life.proactiveGapMin))) {
+        B.life = { ...(B.life || {}), proactiveGapMin: Math.max(0, Math.min(600, Math.round(Number(b.life.proactiveGapMin)))) };
+      }
+      // 真人感来自减法（会犯困/话说短/小细节记不清）默认开
+      if (typeof b.behavior.realism === 'boolean') B.realism = b.behavior.realism;
+      // 她能不能用指令（记住一件事 / 拍张照片给你 / 发语音 / 发个表情包）
+      if (typeof b.behavior.commands === 'boolean') B.commands = b.behavior.commands;
+      // 复读止血的强度（她主动消息不重复说同一件事）
+      if (['off', 'literal', 'literal+intent'].includes(b.behavior.repeatGuard)) B.repeatGuard = b.behavior.repeatGuard;
       // 常识四层·第 4 层（发前自检）的开关，默认开
       if (typeof b.behavior.selfCheck === 'boolean') B.selfCheck = b.behavior.selfCheck;
       if (Number.isInteger(b.behavior.contextRounds) && b.behavior.contextRounds >= 2 && b.behavior.contextRounds <= 100) B.contextRounds = b.behavior.contextRounds;
@@ -1196,8 +1456,29 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
       if (!voiceSent) await this._sendChunk(peer, chunkText, { creds, peer, contextToken });
       this.activity('[回复] ' + chunkText.slice(0, 60));
     }
+    // 她自己在回复里夹带的事（想拍张照片给你看 / 想记一件事 / 想发个表情包…）——文字发完再去做
+    await this._runCommands(out.commands, accountId + ':' + peer, accountId, { peer });
     void this.soul.recordConversation({ peerKey: accountId + ':' + peer, isOwner, userText: text, herTexts: out.chunks }).then((sig) => {
-      if (sig && sig.rude) this._dayEvent('rude', text.slice(0, 30));
+      // A11：你隔了很久没来、现在回来了 → 这段缺席**只结算这一次**（量由想念曲线给）
+      if (isOwner && out && out.absenceMs > 12 * 3600 * 1000) {
+        try {
+          const lg = out.longing || null;
+          const sc = lg ? Math.max(0.25, Math.min(1, lg.value)) : 0.5;
+          const days = Math.round(out.absenceMs / 86400000 * 10) / 10;
+          this._dayEvent('ignored', '你隔了 ' + days + ' 天没来', sc);
+          this.activity('[想念] 你隔了 ' + days + ' 天回来，这件事只算这一次（强度 ' + Math.round(sc * 100) + '%）');
+        } catch { /* 结算失败不影响回复 */ }
+      }
+      // N3：引擎恢复后把降级的记忆补迁进引擎（10 分钟一次，没降级就零开销）
+      if ((this.soul._memHealth ? this.soul._memHealth().degraded : 0) > 0 && Date.now() - (this._memSyncAt || 0) > 10 * 60 * 1000) {
+        this._memSyncAt = Date.now();
+        void this.soul.syncPendingMemories(5).then((r) => { if (r && r.synced) this.activity('[记忆] 把 ' + r.synced + ' 条降级记忆补进了引擎'); }).catch(() => {});
+      }
+      // 承诺闭环：每轮回复后火后不管地抽一次（只在主人轮次；绝不阻塞回复）
+      void this.promises.maybeExtract({ peerKey: accountId + ':' + peer, isOwner, userText: text, herTexts: out.chunks })
+        .catch((e) => this.ctx.logger?.warn?.('[promises] 抽取失败(忽略): ' + (e && e.message)));
+      // 伤害程度影响压力大小（程度 2 明显更重）——仍然喂给同一台压力机，没有新增平行系统
+      if (sig && sig.rude) this._dayEvent('rude', String(sig.hurtWhy || text).slice(0, 30), sig.hurtLevel === 2 ? 1.6 : 1);
       if (sig && sig.warm) this._dayEvent('warm', text.slice(0, 30));
       // 第三次改版：不再因阶段跃迁自动改称呼（称呼由世界引擎的分寸决定；后台仍可手动点「让她现在想一个」）
     }).catch(() => {});
@@ -1273,7 +1554,21 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
       const out = fs.openSync(logPath, 'a');
       const child = spawn(py, [script], {
         detached: true, stdio: ['ignore', out, out], windowsHide: true,
-        env: { ...process.env, MEMORY_SERVICE_CONFIG: path.join(this.companionDir, 'memory-service.json') },
+        // 关掉 mem0 的遥测与远程公告（配置里的 telemetry 字段是假的，必须在进程环境层设）——
+        // 实测 mem-engine.log 里出现过 "[PostHog] error uploading: us.i.posthog.com"，
+        // 说明只写配置不够（mem0 / chromadb 都会各自建 PostHog 客户端）。
+        env: {
+          ...process.env,
+          MEMORY_SERVICE_CONFIG: path.join(this.companionDir, 'memory-service.json'),
+          // python 重定向到文件时默认是块缓冲，日志会看不到启动信息与诊断（实测踩到）
+          PYTHONUNBUFFERED: '1',
+          MEM0_TELEMETRY: 'False',
+          ANONYMIZED_TELEMETRY: 'False',
+          CHROMA_TELEMETRY: 'False',
+          DO_NOT_TRACK: '1',
+          HF_HUB_DISABLE_TELEMETRY: '1',
+          SCARF_NO_ANALYTICS: 'true',
+        },
       });
       this._memEngineSpawned = true;
       try { child.unref(); } catch { /* noop */ }
@@ -1303,7 +1598,7 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
       } catch { /* 旧进程可能本来就没跑，或版本太旧没有 /quit */ }
       for (let i = 0; i < 12; i++) { await sleep(500); const h = await this.memClient.health(); if (!h) break; }
       // ② 起新的
-      try { this.soul._engineCache = null; } catch { /* noop */ }
+      try { this.soul._engineCache = { ok: null, at: 0, info: null }; } catch { /* noop */ }
       this._spawnMemoryEngine();
       // ③ 等它就绪
       for (let i = 0; i < 20; i++) {
@@ -1340,6 +1635,22 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
     }
   }
 
+  /**
+   * 桶化迁移（一次性）：给老记忆补上「桶」并回填本地缺失的 mid。
+   * 失败不置标志、下轮重试；标志只保证"成功过就不重复跑"。
+   */
+  async _autoMigrateBuckets() {
+    try {
+      const cfgNow = this._modelConfig();
+      if (cfgNow.memoryBucketsMigrated) return;
+      const r = await this.soul.migrateBuckets();
+      this.activity('[记忆] 桶化迁移：' + r.migrated + ' 条入桶 · 补回 mid ' + r.matched + ' 条 · 待人工处置 ' + r.review + ' 条');
+      this._writeCompanionConfig({ ...cfgNow, memoryBucketsMigrated: true });
+    } catch (err) {
+      this.ctx.logger?.warn?.('[wechat-companion] 桶化迁移失败(下轮再试): ' + err.message);
+    }
+  }
+
   /** 记忆引擎 sidecar 自检：启动先写配置（消灭"引擎先于配置"空窗），拉起/重启，日志落盘 */
   async _ensureMemoryEngine() {
     try {
@@ -1348,13 +1659,17 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
       if (sys.autoStartEngine === false) return;
       this._syncSidecarConfigs(cfg0);
       const h0 = await this.memClient.health();
+      let restarted = false;
       if (h0) {
         if (h0.ready) this._memEngineWasUp = true;
-        // 2026-09-13 改：**启动时总是重启一次**，保证引擎跑的是当前的 python 代码 + 当前配置。
-        // （旧行为"已在跑就复用"会让改了 python 也永远不生效——这次踩过。）
-        const ok = await this._restartMemoryEngine('插件启动');
-        if (!ok) return;
-      } else {
+        // 启动时总是重启一次，保证引擎跑的是当前的 python 代码 + 当前配置。
+        // （旧行为「已在跑就复用」会让改了 python 也永远不生效。）
+        restarted = await this._restartMemoryEngine('插件启动');
+      }
+      // 重启失败、或本来就没在跑 → 都必须退回去「直接拉起」。
+      // 以前这里写的是 `if (!ok) return;`——结果是引擎一旦重启失败就**永远起不来**（实测踩到：
+      // 插件重启后 /quit 关掉了旧引擎，新引擎再没被拉起，所有记忆操作全挂）。
+      if (!restarted) {
         if (!this._spawnMemoryEngine()) return;
         for (let i = 0; i < 15; i++) {
           await sleep(2000);
@@ -1368,6 +1683,7 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
         }
       }
       await this._autoMigrateLegacyMemory();
+      await this._autoMigrateBuckets();
     } catch (err) {
       this.ctx.logger?.warn?.('[wechat-companion] 记忆引擎自检失败: ' + (err && err.message));
     }
@@ -1991,7 +2307,7 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
       const log = Array.isArray(rc.renameLog) ? rc.renameLog.slice(-19) : [];
       log.push({ at: Date.now(), from: rc.ownerCallsMe || persona.name || '', to: r.name, stage: pend.to, reason: r.reason || '' });
       this.soul.updateRelationship({ ownerCallsMe: r.name, renameLog: log, renamePending: null, announceName: true });
-      try { await this.soul.addMemory({ who: 'self', text: '（改称呼）我决定让大家叫我「' + r.name + '」' + (r.reason ? '——' + r.reason : ''), importance: 3, tags: ['称呼'], source: 'self' }); } catch {}
+      try { await this.soul.addMemory({ who: 'self', text: '（改称呼）我决定让大家叫我「' + r.name + '」' + (r.reason ? '——' + r.reason : ''), cat: 'her', bucket: 'feel' }); } catch {}
       this.ctx.logger?.info?.('[rename] 她现在希望大家叫她「' + r.name + '」（' + (r.reason || '') + '）');
       this.activity('[称呼] 她决定让大家叫她「' + r.name + '」：' + (r.reason || ''));
       return r;
@@ -2390,9 +2706,20 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
             chats: ownerRel ? (ownerRel.chats || 0) : 0,
             firstSeen: ownerRel ? (ownerRel.firstSeen || 0) : 0,
             lastSeen: ownerRel ? (ownerRel.lastSeen || 0) : 0,
-            mood: ownerRel ? Math.round(ownerRel.mood || 0) : 0,
+            mood: this.soul.moodNow(),
           };
-          return send(200, { ok: true, today: this.today(), deform: this.deform.info(), world: this.world.state(), evolution: this.soul.readEvolution(), relation });
+          try { relation.longing = this._longingInfo(); } catch { /* noop */ }
+          // A12：后台只写一句事实，不显示分数（熟度取自世界引擎的实时判断）
+          try {
+            const tt0 = (this.world.state() || {}).tone || {};
+            relation.fact = this.soul.affectionTitle(Number(tt0.intimacy) || 0, !!ownerRaw);
+          } catch { /* noop */ }
+          try {
+            // 用与世界引擎心跳同一个上限（否则后台的额度数与实际生效的不是一个数）
+            const toneG = toneForToday(this.world.state(), this.today());
+            relation.gate = (this.life && this.life.gateView) ? this.life.gateView(new Date(), { stageLimit: this._stageLimitNow(toneG) }) : null;
+          } catch { /* noop */ }
+          return send(200, { ok: true, today: this.today(), deform: this.deform.info(), world: this.world.state(), evolution: this.soul.readEvolution(), relation, bodyState: this._bodyStateInfo() });
         } catch (err) { return send(200, { ok: true, today: null, error: err.message }); }
       }
       /* ── 形象工坊 + 相册 ── */
@@ -2830,7 +3157,7 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
           const b = persona.behavior || {};
           const cfgNow = this._modelConfig();
           this._writeCompanionConfig(this._sanitizeConfig({ ...cfgNow,
-            behavior: { ...(cfgNow.behavior || {}), replySpeed: b.replySpeed || (cfgNow.behavior || {}).replySpeed || 'human' },
+            behavior: { ...(cfgNow.behavior || {}) },
             life: { ...(cfgNow.life || {}), wake: b.baseWake || (cfgNow.life || {}).wake, sleep: b.baseSleep || (cfgNow.life || {}).sleep, pokesPerDay: b.activePerDay != null ? b.activePerDay : (cfgNow.life || {}).pokesPerDay, nudgeMinutes: b.pokeMinutes || (cfgNow.life || {}).nudgeMinutes, nudgeMaxPerDay: b.pokeMaxPerDay != null ? b.pokeMaxPerDay : (cfgNow.life || {}).nudgeMaxPerDay },
           }));
         } catch { /* 镜像失败不致命 */ }
@@ -2859,9 +3186,87 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
         this.soul.deleteArchive(String(body.id || ''));
         return send(200, { ok: true });
       }
+      // 她答应过的事（批 E3 / A8）：看得见、能取消/改期/补提
+      if (req.method === 'GET' && path === 'panel/promises') {
+        try { return send(200, { ok: true, ...this.promises.view() }); }
+        catch (err) { return send(500, { ok: false, error: err.message }); }
+      }
+      if (req.method === 'POST' && path === 'panel/promises/action') {
+        try {
+          const b3 = await readBody(req);
+          const r3 = this.promises.action({ id: String(b3.id || ''), op: String(b3.op || ''), due: b3.due, reason: b3.reason });
+          if (!r3.ok) return send(400, { ok: false, error: r3.error });
+          return send(200, { ok: true, ...this.promises.view() });
+        } catch (err) { return send(500, { ok: false, error: err.message }); }
+      }
+      // 调试用：跑一次抽取但不入队（防"抽没抽到"变成黑盒）
+      if (req.method === 'POST' && path === 'panel/promises/test') {
+        try {
+          const b4 = await readBody(req);
+          const r4 = await this.promises.testExtract(String(b4.dialogue || ''));
+          return send(r4.ok ? 200 : 400, r4);
+        } catch (err) { return send(500, { ok: false, error: err.message }); }
+      }
+      // 表情包库（批 E2 / A7）：她能自己挑着发，你能传/停用/删
+      if (req.method === 'GET' && path === 'panel/stickers') {
+        try { return send(200, { ok: true, items: listStickers(this.companionDir) }); }
+        catch (err) { return send(500, { ok: false, error: err.message }); }
+      }
+      if (req.method === 'POST' && path === 'panel/stickers') {
+        try {
+          const b2 = await readBody(req);
+          const op = String(b2.op || 'add');
+          if (op === 'add') {
+            let buf = Buffer.alloc(0);
+            if (b2.dataBase64) buf = Buffer.from(String(b2.dataBase64).replace(/^data:[^,]+,/, ''), 'base64');
+            const r2 = addSticker(this.companionDir, { name: b2.name, ext: b2.ext || '.png', data: buf, tags: b2.tags });
+            if (!r2.ok) return send(400, { ok: false, error: r2.error });
+            this.activity('[表情包] 新增：' + b2.name);
+            return send(200, { ok: true, item: r2.item, items: listStickers(this.companionDir) });
+          }
+          if (op === 'remove') {
+            const r2 = removeSticker(this.companionDir, b2.name);
+            if (!r2.ok) return send(400, { ok: false, error: r2.error });
+            this.activity('[表情包] 删除：' + b2.name);
+            return send(200, { ok: true, items: listStickers(this.companionDir) });
+          }
+          if (op === 'enable') {
+            const r2 = setStickerEnabled(this.companionDir, b2.name, b2.enabled !== false);
+            if (!r2.ok) return send(400, { ok: false, error: r2.error });
+            return send(200, { ok: true, items: listStickers(this.companionDir) });
+          }
+          return send(400, { ok: false, error: 'op 只能是 add / remove / enable' });
+        } catch (err) { return send(500, { ok: false, error: err.message }); }
+      }
+      // 她今天用了哪些「她想做的事」、到顶了没有（禁黑盒）
+      if (req.method === 'GET' && path === 'panel/commands') {
+        const cfg2 = this._modelConfig();
+        const usage = this._readCmdUsage();
+        return send(200, {
+          ok: true,
+          enabled: (cfg2.behavior || {}).commands !== false,
+          usage: usageLine(usage, usage.date || ''),
+          raw: usage.used || {},
+          recent: this._recentWanted(),
+        });
+      }
+      if (req.method === 'POST' && path === 'panel/memory/buckets-migrate') {
+        try {
+          const r = await this.soul.migrateBuckets();
+          const cfgNow = this._modelConfig();
+          this._writeCompanionConfig({ ...cfgNow, memoryBucketsMigrated: true });
+          return send(200, { ok: true, ...r });
+        } catch (err) { return send(500, { ok: false, error: err.message }); }
+      }
       if (req.method === 'GET' && path === 'panel/memory') {
         const view = await this.soul.memoriesView();
-        return send(200, { ok: true, ...view, relations: this.soul.getRelations() });
+        // 心情是算出来的（见 soul.moodNow）：读接口时统一带上，不返回文件里那个旧值
+        const relsRaw = this.soul.getRelations();
+        const moodNow = this.soul.moodNow();
+        const relations = {};
+        for (const k of Object.keys(relsRaw)) relations[k] = { ...relsRaw[k], mood: moodNow };
+        const staleCount = (view.entries || []).filter((e) => e.bucket === 'dynamic' && e.weight <= 0.3).length;
+        return send(200, { ok: true, ...view, relations, staleCount, health: { ...this.soul._memHealth(), pendingSync: this.soul.pendingMemoryCount() } });
       }
       if (req.method === 'GET' && path === 'panel/mem-engine') {
         const h = await this.memClient.health();
@@ -2919,15 +3324,17 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
         const body = await readBody();
         const op = String(body.op || '');
         if (op === 'add') {
-          await this.soul.addMemory({ who: String(body.who || ''), cat: String(body.cat || ''), text: String(body.text || ''), importance: Number(body.importance) || 3, tags: Array.isArray(body.tags) ? body.tags : [], pinned: !!body.pinned });
+          await this.soul.addMemory({ who: String(body.who || ''), cat: String(body.cat || ''), bucket: String(body.bucket || ''), text: String(body.text || '') });
         } else if (op === 'edit') {
           await this.soul.editMemory(String(body.id || ''), body.patch || {});
         } else if (op === 'delete') {
           await this.soul.deleteMemory(String(body.id || ''));
         } else if (op === 'pin') {
           await this.soul.pinMemory(String(body.id || ''));
+        } else if (op === 'bucket') {
+          await this.soul.setBucket(String(body.id || ''), String(body.bucket || ''));
         } else {
-          return send(400, { error: 'op must be add|edit|delete|pin' });
+          return send(400, { error: 'op must be add|edit|delete|pin|bucket' });
         }
         const view = await this.soul.memoriesView();
         return send(200, { ok: true, ...view });

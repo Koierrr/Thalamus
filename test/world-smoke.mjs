@@ -60,7 +60,11 @@ for (let i = 0; i < 12; i++) {
   wakes.add(st.wake);
   if (shift < 30 || shift > 100) { ok(false, '周末推迟超范围：' + st.wake + '（shift=' + shift + '）'); break; }
 }
-if ([...wakes].length >= 2) ok(true, '周末起床在30%~100%内连续随机（采样 ' + wakes.size + ' 种不同结果）');
+// 以前这里是 `if (采样>=2) ok(true, ...)`：采样不足 2 种时**一条断言都不产生**，
+// 等于"她到底有没有在随机"从来没被验过。现在拆成两条真断言。
+ok(wakes.size >= 2, '周末起床确实在随机（12 次采样出现 ' + wakes.size + ' 种不同结果）');
+ok([...wakes].every(function (w) { var s2 = hmMin(w) - hmMin('07:30'); return s2 >= 30 && s2 <= 100; }),
+  '每个采样值都落在 30%~100% 的推迟区间内：' + [...wakes].join('、'));
 
 // ── ④ WorldEngine.generate 产出与落盘 ──
 const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'world-smoke-'));
@@ -81,13 +85,40 @@ const eng = new WorldEngine({
   soul: null,
   logger: () => {},
 });
-const out = await eng.generate({ persona: basePersona(), today: { sleep: '23:30', events: [] }, memories: [], now });
+// 固定一个「她还没睡」的时刻：这个用例的期望值跟"现在几点"有关，
+// 用真实时钟会在她睡点（23:30）之后自动翻脸——测试必须确定性。
+const nowGen = new Date('2026-09-13T15:00:00');
+const out = await eng.generate({ persona: basePersona(), today: { sleep: '23:30', events: [] }, memories: [], now: nowGen });
 ok(out.wake === '09:40' && out.sleep === '00:30', '引擎产出明日作息');
 ok(out.portrait === '他最近很温柔，会哄我', '引擎重写画像');
-const expectedForDate = now.getHours() < 4 ? todayKey : keyOf(new Date(now.getTime() + 86400000));
+// 新规则：这个目录是全新的（今天还没有剧本）且现在没过她的睡觉时间 → 写「今天」。
+// 旧规则用是否凌晨 4 点前判断，于是早上补跑会写成明天、把当天剧本覆盖掉（实测踩到，这里钉死）。
+const expectedForDate = '2026-09-13';
 ok(out.forDate === expectedForDate, 'forDate 指向剧本生效日（' + out.forDate + '）');
 const saved = JSON.parse(fs.readFileSync(path.join(dir4, 'world-state.json'), 'utf8'));
 ok(saved.forDate === expectedForDate && saved.portrait, '剧本落盘（含forDate/portrait）');
+
+// ── ④b 时间判定（唯一入口 planForDate）──
+const dirP = fs.mkdtempSync(path.join(os.tmpdir(), 'world-plan-'));
+const engP = new WorldEngine({ dir: dirP, router: { chat: async () => ({ content: 'x' }) }, chatFn: async () => fakeReply,
+  config: () => ({ world: { baseURL: 'https://world.example', model: 'world-model' } }), soul: null, logger: () => {} });
+const sched = { wake: '09:30', sleep: '01:10' };
+const planMorning = engP.planForDate(new Date('2026-09-13T07:03:00'), sched);
+ok(planMorning.forDate === '2026-09-13', '早上 7 点补跑 → 写今天而不是明天（' + planMorning.forDate + '，' + planMorning.why + '）');
+ok(engP.shouldGenerate(new Date('2026-09-13T07:03:00'), sched) === true, '今天还没有剧本 → 允许补跑');
+fs.writeFileSync(path.join(dirP, 'world-state.json'), JSON.stringify({ date: '2026-09-12', forDate: '2026-09-13', wake: '09:30', sleep: '01:10' }), 'utf8');
+ok(engP.shouldGenerate(new Date('2026-09-13T07:03:00'), sched) === false, '今天已经有剧本 → 早上那次不会再跑（不会覆盖当天）');
+const planNight = engP.planForDate(new Date('2026-09-13T23:40:00'), sched);
+ok(planNight.forDate === '2026-09-13' && engP.shouldGenerate(new Date('2026-09-13T23:40:00'), sched) === false,
+  '她还没睡（睡点是凌晨 01:10）→ 今晚先不写，别冲掉今天正在用的剧本');
+fs.writeFileSync(path.join(dirP, 'world-state.json'), JSON.stringify({ date: '2026-09-13', forDate: '2026-09-13', wake: '09:30', sleep: '01:10' }), 'utf8');
+const planMid = engP.planForDate(new Date('2026-09-14T01:20:00'), sched);
+ok(planMid.forDate === '2026-09-14' && engP.shouldGenerate(new Date('2026-09-14T01:20:00'), sched) === true,
+  '过了午夜（已是新的一天）→ 写这一天（' + planMid.forDate + '）');
+fs.writeFileSync(path.join(dirP, 'world-state.json'), JSON.stringify({ date: '2026-09-11', forDate: '2026-09-12', wake: '09:30', sleep: '01:10' }), 'utf8');
+ok(engP.shouldGenerate(new Date('2026-09-11T23:40:00'), sched) === false, '明天已经写好了 → 不为了补今天把它冲掉');
+const planLate = engP.planForDate(new Date('2026-09-13T23:40:00'), { wake: '09:30', sleep: '23:30' });
+ok(planLate.forDate === '2026-09-14', '她当天就寝且已过睡点 → 写明天（' + planLate.forDate + '）');
 
 // ── ⑤ 过期剧本（forDate不匹配）被忽略 ──
 const dir5 = fs.mkdtempSync(path.join(os.tmpdir(), 'world-smoke-'));
@@ -176,9 +207,12 @@ await eng9.generate({ persona: basePersona(), today: { sleep: '23:30' }, memorie
   () => ok(false, '未配置时 generate 应当拒绝'),
   (e) => ok(/未配置独立API/.test(e.message), '未配置时 generate 明确拒绝（' + e.message + '）')
 );
+let chatCalled = false;
 const eng9b = new WorldEngine({
   dir: fs.mkdtempSync(path.join(os.tmpdir(), 'world-smoke-')),
-  router: { chat: async () => { throw new Error('对话接口不该被世界引擎调用'); } },
+  // 对话接口故意"能被调用成功"并留痕：世界引擎一旦偷偷回落，这里就会记录到，
+  // 断言才能真的区分「只抛错」和「回落了」——以前两边都抛错，等于没验。
+  router: { chat: async () => { chatCalled = true; return { content: '不该被调用' }; } },
   chatFn: async () => { throw new Error('专线网络炸了'); },
   config: () => ({ world: { baseURL: 'https://world.example', model: 'm' } }),
   logger: () => {},
@@ -186,8 +220,10 @@ const eng9b = new WorldEngine({
 ok(eng9b.shouldGenerate(nightNow, { sleep: '23:30' }) === true, '配置了独立API → 允许生成');
 await eng9b.generate({ persona: basePersona(), today: { sleep: '23:30' }, memories: [], now }).then(
   () => ok(false, '专线失败应当抛错（不回落对话接口）'),
-  (e) => ok(true, '专线失败只抛错、绝不回落对话接口（' + e.message + '）')
+  // 以前只断言"抛了错"——任何意外错误（包括代码 bug）都会让它通过。现在连错误内容一起验。
+  (e) => ok(/专线网络炸了/.test(String(e.message)), '抛的是专线自己的错、不是别的意外错误：' + String(e.message).slice(0, 40))
 );
+ok(chatCalled === false, '专线失败后确实没有回落去调对话接口（真验了，不是只看它抛不抛错）');
 ok(eng9b.shouldGenerate(nightNow, { sleep: '23:30' }) === false, '失败后30分钟内不再重试（防刷日志）');
 
 // ── ⑩ 虚拟社交圈：稳定编制（旧格式兼容+新面孔进圈+同名刷新+跨晚持久）+ 天气开关 ──

@@ -70,7 +70,11 @@ export async function chatCompletion({ baseURL, apiKey, model, messages, tempera
   if (maxTokens) body.max_tokens = maxTokens;
   const data = await postJson(base + '/chat/completions', apiKey, body, timeoutMs, signal);
   const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== 'string') throw new Error('chat 返回缺少 content');
+  if (typeof content !== 'string') {
+    // 把原始响应带出来：否则这种失败只留一句"缺少 content"，看不出是模型返回了别的形状还是接口报错
+    //（真机上就遇到过：长对话摘要那条链每次失败，日志里只有这一句）。
+    throw new Error('chat 返回缺少 content（原始响应：' + JSON.stringify(data).slice(0, 220) + '）');
+  }
   return { content, usage: data.usage || null };
 }
 

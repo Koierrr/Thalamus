@@ -10,6 +10,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { chatCompletion } from './model-router.js';
+import { parseCommands, hasBrokenCommand } from './commands.js';
+import { bodyPromptLine } from './body-state.js';
+import { longingCurve, longingLine } from './longing.js';
+import { getSummary, saveSummary, summarizeOlder } from './history-summary.js';
 import { featureSummaryForSoul, featureGistForSoul, CAPABILITY_KEYWORDS } from './feature-status.js';
 import { birthdayInfo } from './birthday.js';
 
@@ -32,55 +36,40 @@ function rid() {
   return crypto.randomBytes(6).toString('hex');
 }
 
-/** 出厂人设（面板可整体替换；人设工坊导入后亦写入此结构） */
-/** 关系六阶段（亲密度门槛 → 阶段名 → 称呼方式提示）。后台「你们」页直接展示这张表。 */
-export const STAGES = [
-  { min: 0, label: '刚认识', callHint: '用名字或哎' },
-  { min: 20, label: '熟人', callHint: '直呼其名' },
-  { min: 40, label: '朋友', callHint: '名字或外号' },
-  { min: 55, label: '亲近', callHint: '偶尔撒泼叫喂' },
-  { min: 70, label: '暧昧', callHint: '开始试探性的昵称' },
-  { min: 85, label: '恋人', callHint: '固定昵称或亲爱的' },
-];
+/**
+ * 记忆的三个桶——管的是「会不会被淡忘」。归属（我／她／世界）是另一个正交的轴，见 catOf。
+ * 桶只存 memory-meta.json 的 v2 结构里；条目本身不带这些字段。
+ */
+const BUCKETS = ['dynamic', 'permanent', 'feel'];
+export const BUCKET_LABEL = { dynamic: '会淡忘', permanent: '固化', feel: '她自己的感受' };
+const BUCKET_FLOOR = 0.25;                       // 权重下限：只会变淡，永不归零（不替用户删记忆）
+const BUCKET_TAU = { dynamic: 21, feel: 60 };    // 半衰天数：普通事 21 天，她的感受 60 天
 
+/**
+ * 一条记忆该进哪个桶（**唯一**的默认判定处：新增条目、读取时兜底、迁移都走这里）。
+ *   手写的（后台「记住」、女娲种子，特征是 who 为空）→ 固化
+ *   世界引擎写的（who='self'）→ 看内容：「（成长）」是她的感受，其余（生活流水）会淡忘
+ *   关于他的普通事 → 会淡忘
+ * 注意：显式传了 bucket 的以显式为准（后台可以手动改桶）。
+ */
+function defaultBucket(item = {}) {
+  const cat = String(item.cat || '');
+  const source = String(item.source || '');
+  const who = String(item.who == null ? '' : item.who);
+  const text = String(item.text || '');
+  if (source === 'manual' || source === 'handcraft') return 'permanent';
+  if (who === '' && text.trim()) return 'permanent';
+  if (/^（成长）/.test(text)) return 'feel';
+  if (cat === 'her') return 'feel';
+  return 'dynamic';
+}
+
+/** 出厂人设（面板可整体替换；人设工坊导入后亦写入此结构） */
 /**
  * 关系分寸表（兜底）：亲密度 → 她今天"该有多熟"。
  * 这是**保底**：世界引擎每晚跑成功时会结合性格/职业/心情/最近互动给出更细的 tone（见她世界里的输出），
  * 后台「你们→关系阶段」能看到当前用的是哪一份。
  */
-export const STAGE_TONE = {
-  刚认识: {
-    intimacy: 10, address: '用名字或「哎」，不叫昵称', chunks: 1, maxChars: 18,
-    style: '客气、简短、有边界感；不主动示好、不撒娇、不用感叹号、不打听隐私',
-    forbid: ['撒娇', '叫昵称/亲爱的', '说想你/喜欢你', '要求对方为自己做事', '深夜发消息', '连发多条'],
-  },
-  熟人: {
-    intimacy: 35, address: '直呼其名', chunks: 2, maxChars: 28,
-    style: '能正常闲聊，语气自然；偶尔吐槽，但不越界',
-    forbid: ['撒娇', '叫昵称', '说想你', '要求对方为自己做事', '深夜发消息'],
-  },
-  朋友: {
-    intimacy: 55, address: '名字或外号',
-    style: '可以开玩笑、吐槽、讲自己的事；会主动分享但不黏人',
-    forbid: ['叫亲爱的', '要求对方为自己做事', '深夜撒娇'],
-  },
-  亲近: {
-    intimacy: 70, address: '偶尔撒泼叫「喂」',
-    style: '会主动找他、会关心他；可以有一点小脾气和小撒娇',
-    forbid: ['过度索取（连环催、逼问行踪）'],
-  },
-  暧昧: {
-    intimacy: 82, address: '开始试探性的昵称',
-    style: '会暗示、会试探、会等他消息；被晾着会有点小情绪',
-    forbid: ['直接表白式的压迫感（要留余地）'],
-  },
-  恋人: {
-    intimacy: 95, address: '固定昵称或亲爱的',
-    style: '亲昵、会撒娇、会想念；可以管他作息、可以说想他',
-    forbid: [],
-  },
-};
-
 /**
  * 默认分寸（2026-09-13 第三次改版：亲密度/关系阶段退场）
  * 不再按亲密度分档——世界引擎没给过分寸时，就用这套"与关系无关"的自然默认。
@@ -89,8 +78,6 @@ export const DEFAULT_TONE = {
   intimacy: null,
   address: '用名字（或「哎」），不叫昵称',
   style: '自然、直接、话不多，有事说事',
-  chunks: 2,
-  maxChars: 30,
   forbid: ['别太热络', '别撒娇'],
   reason: '世界引擎还没给过分寸，先用默认',
 };
@@ -151,7 +138,13 @@ export function nowDoing(today, world, now) {
   const bits = [];
   if (last) bits.push('你刚做完这件事：' + String(last.text || '').slice(0, 70) + '（' + last.time + '）');
   else if (wakeMin != null && cur >= wakeMin && cur < wakeMin + 120) bits.push('你刚起床不久（' + t.wake + ' 起的）');
-  else if (wakeMin != null && cur < wakeMin) bits.push('你还没起床');
+  else if (wakeMin != null && cur < wakeMin) {
+    // 起床时间之前。**注意**：这里以前一律写"你还没起床"——但凌晨（还没到她睡觉时间）她其实还醒着，
+    // 于是她被告知"还没起床"，回复里就长出"刚醒"这种跟自己作息打架的话（2026-09-14 用户真机截图抓到：
+    // 01:00 她说"刚醒"，而她 01:20 才睡）。现在按"睡前 / 睡中"分开说。
+    bits.push('现在是夜里（还没到你 ' + t.wake + ' 的起床时间）。你的睡觉时间是 ' + (t.sleep ? String(t.sleep) : '（没写）')
+      + '，这个点你要么还没睡、正准备睡，要么已经睡着了——**绝对不许说"刚醒/刚起床"**，那和你自己的作息矛盾');
+  }
   else bits.push('今天这件事还没开始');
   if (next) bits.push('接下来你大概要做：' + String(next.text || '').slice(0, 70) + '（' + next.time + '）');
   return '【此刻你在做什么】' + bits.join('；') + '。**你正在做的/刚做完的就是这个**：不许说你正在干别的、不许凭空给自己安排今天的行程。';
@@ -187,24 +180,6 @@ export function cleanReply(text) {
   return s.trim();
 }
 
-/** @deprecated 亲密度分档（第三次改版后不再使用，仅为兼容旧测试保留） */
-export function stageToneOf(affection) {
-  const table = STAGES;
-  let st = table[0];
-  for (const x of table) if (affection >= x.min) st = x;
-  const t = STAGE_TONE[st.label] || STAGE_TONE['刚认识'];
-  return { stage: st.label, ...t };
-}
-
-/** 关系阶段允许的主动消息上限（亲密度低时她不该老来找你） */
-export function proactiveLimitOf(affection) {
-  if (affection < 20) return { affection: Math.round(affection), morning: false, night: false, pokes: 0, nudges: 0 };
-  if (affection < 40) return { affection: Math.round(affection), morning: true, night: true, pokes: 1, nudges: 1 };
-  if (affection < 55) return { affection: Math.round(affection), morning: true, night: true, pokes: 2, nudges: 2 };
-  if (affection < 70) return { affection: Math.round(affection), morning: true, night: true, pokes: 3, nudges: 3 };
-  return null; // 足够熟 → 按后台配置走，不再限制
-}
-
 export const DEFAULT_PERSONA = {
   name: '小暖',
   birthday: '',
@@ -238,7 +213,7 @@ export const DEFAULT_PERSONA = {
   behavior: {
     baseWake: '07:30', baseSleep: '23:30', jitterMin: 45,
     nightOwlProb: 0.15, allNighterProb: 0.03, weekendShiftMin: 60,
-    replySpeed: 'human', activePerDay: 3, pokeMinutes: 30, pokeMaxPerDay: 2,
+    activePerDay: 3, pokeMinutes: 30, pokeMaxPerDay: 2,
   },
   // 她的过去分三层（作者层=你填的底细；她全知道，但对外一层层透露）
   // surface：表层（职业/城市/日常喜好，刚认识就能聊）
@@ -315,7 +290,7 @@ export class Soul {
     // v2：行为参数热读（fn → config.json 的 behavior+memory 组）
     this._behaviorGet = typeof options.behavior === 'function' ? options.behavior : () => ({});
     fs.mkdirSync(path.join(this.dir, 'history'), { recursive: true });
-    this._engineCache = { ok: null, at: 0, info: null };
+    this._engineCache = { ok: null, at: 0, info: null };   // 失效时也用这个空对象，别赋 null（读 .at 会抛错）
     this._lastEngineLog = 0;
   }
 
@@ -327,9 +302,7 @@ export class Soul {
     const pb = persona.behavior || {};
     const b = { ...(this._behaviorGet() || {}), ...pb };
     const m = b.memory || {};
-    const speed = ['instant', 'human', 'slow'].includes(b.replySpeed) ? b.replySpeed : 'human';
     return {
-      replySpeed: speed,
       chunkMax: Math.min(5, Math.max(1, Number(b.chunkMax) || 3)),
       contextRounds: Math.min(60, Math.max(2, Number(b.contextRounds) || Number((b.params || {}).historyRounds) || 16)),
       maxTokens: Math.min(8000, Math.max(64, Number((b.params || {}).maxTokens) || 500)),
@@ -344,6 +317,10 @@ export class Soul {
       // 「他是谁」档案已退场（2026-09-13 用户拍板）：不再带 owner
       talkiness: (typeof b.talkiness === 'number' && isFinite(b.talkiness)) ? Math.max(0, Math.min(100, b.talkiness)) : null,
       selfCheck: b.selfCheck !== false,
+      // 「真人感来自减法」总开关（默认开）：会犯困/话说短/小细节记不清由性格与电量推
+      realism: b.realism !== false,
+      // 复读止血的强度：off=不判 / literal=只比字面（免费）/ literal+intent=再加一次便宜模型判"是不是同一件事"
+      repeatGuard: ['off', 'literal', 'literal+intent'].includes(b.repeatGuard) ? b.repeatGuard : 'literal+intent',
       speedMul: Math.max(0.5, Math.min(2.5, Number(b.speedMul) || 1)),
     };
   }
@@ -352,7 +329,8 @@ export class Soul {
   async engineUp() {
     if (!this.memory) return false;
     const now = Date.now();
-    if (this._engineCache.at && now - this._engineCache.at < 60000) return !!this._engineCache.ok;
+    const c = this._engineCache || {};
+    if (c.at && now - c.at < 60000) return !!c.ok;
     const info = await this.memory.health();
     const up = !!(info && info.ready !== false);
     this._engineCache = { ok: up, at: now, info: info };
@@ -365,11 +343,59 @@ export class Soul {
 
   engineInfo() { return this._engineCache.info; }
 
-  // ---------- mem0 条目的补充元数据（置顶/重要度），本地小文件 ----------
+  // ---------- 记忆的桶与「最后一次被想起」（本地小文件，v2 结构） ----------
+  // v1 是 {id:{importance,pinned}}，v2 是 {v:2, entries:{id:{bucket,lastHit}}}。
+  // 读到旧格式一律当空对象：旧数据由「桶化迁移」负责转换，读取端不做兼容猜测。
   _metaFile() { return path.join(this.dir, 'memory-meta.json'); }
-  _metaAll() { return readJson(this._metaFile(), {}); }
-  _metaSave(all) { writeJson(this._metaFile(), all); }
+  _metaAll() {
+    const all = readJson(this._metaFile(), null);
+    if (all && typeof all === 'object' && !Array.isArray(all)
+        && all.v === 2 && all.entries && typeof all.entries === 'object') return all.entries;
+    return {};
+  }
+  _metaSave(entries) { writeJson(this._metaFile(), { v: 2, entries: entries || {} }); }
   _metaGet(id) { return this._metaAll()[id] || {}; }
+
+  /** 条目的桶：meta 里没有就按默认规则推——迁移还没覆盖到的条目也不会变成未知状态。 */
+  _bucketOf(e = {}) {
+    const key = e.mid || e.id || '';
+    const m = key ? this._metaGet(key) : {};
+    return BUCKETS.includes(m.bucket) ? m.bucket : defaultBucket(e);
+  }
+
+  /** 遗忘曲线：越久没被提起权重越低，但永不归零；固化桶不衰减。 */
+  _bucketWeight(bucket, lastHit, ts) {
+    if (bucket === 'permanent') return 1;
+    const t0 = Number(lastHit) || Number(ts) || Date.now();
+    const age = Math.max(0, Date.now() - t0) / 86400000;
+    const tau = BUCKET_TAU[bucket] || BUCKET_TAU.dynamic;
+    return BUCKET_FLOOR + (1 - BUCKET_FLOOR) * Math.exp(-age / tau);
+  }
+
+  /** 改桶（后台点一下就改这里；引擎在线时同时改本地镜像，保持一致）。 */
+  async setBucket(memId, bucket) {
+    if (!BUCKETS.includes(bucket)) throw new Error('未知的桶: ' + bucket);
+    const cur = this._metaGet(memId);
+    if (await this.engineUp()) { this._metaSet(memId, { ...cur, bucket, lastHit: cur.lastHit || 0 }); this._jsonEditByMid(memId, { bucket }); return bucket; }
+    this._jsonEdit(memId, { bucket });
+    this._metaSet(memId, { ...cur, bucket, lastHit: cur.lastHit || 0 });
+    return bucket;
+  }
+
+  /** 本轮真正被想起的条目：刷新 lastHit（6 小时节流）让权重回升。 */
+  touchMemories(entries = []) {
+    const now = Date.now();
+    let dirty = false;
+    for (const e of entries) {
+      const key = e.mid || e.id;
+      if (!key) continue;
+      const cur = this._metaGet(key);
+      if (cur.lastHit && now - cur.lastHit < 6 * 3600000) continue;
+      this._metaSet(key, { bucket: cur.bucket || this._bucketOf(e), lastHit: now });
+      dirty = true;
+    }
+    return dirty;
+  }
   _metaSet(id, patch) {
     if (!id) return;
     const all = this._metaAll();
@@ -470,10 +496,55 @@ export class Soul {
 
   getRelations() { return readJson(this.relationsFile(), {}); }
 
+  /**
+   * 她的心情：**算出来的，不是存出来的**。
+   *
+   * 以前心情散在三个地方——世界引擎给的明天基线、今天那份状态里的基准、
+   * 以及每个联系人各存一份并被每轮聊天加减（+0.5 / 被哄 +4 / 被凶 -6）。
+   * 结果是它跟真实状态脱钩：人可以一边很委屈、一边心情还有 79。
+   *
+   * 现在只有一个输入 + 三个明确修正项，永远不会自相矛盾：
+   *   心情 = 今天的基准（世界引擎给）＋ 今天的互动累计（被哄/被凶）− 压力/4 ＋ 电量修正
+   */
+  moodNow() {
+    const t = Date.now();
+    if (this._moodMemo && t - this._moodMemo.at < 2000) return this._moodMemo.v;
+    let base = 60, delta = 0, batt = 60, stress = 0;
+    try {
+      const d = readJson(path.join(this.dir, 'daily-state.json'), {}) || {};
+      if (typeof d.mood === 'number' && isFinite(d.mood)) base = d.mood;
+      if (typeof d.battery === 'number' && isFinite(d.battery)) batt = d.battery;
+      const de = d.dayEvents || {};
+      delta = Number(de.moodDelta) || 0;
+    } catch { /* 读不到就用默认值 */ }
+    try {
+      const f = readJson(path.join(this.dir, 'deform-state.json'), {}) || {};
+      stress = Number(f.stress) || 0;
+    } catch { /* 同上 */ }
+    const v = Math.max(0, Math.min(100, Math.round(base + delta - stress / 4 + (batt - 60) / 8)));
+    this._moodMemo = { at: t, v };
+    return v;
+  }
+
+  /** 今天的互动对心情的累计（被哄/被凶），存在每日状态里，隔天随日期重置。 */
+  _addMoodDelta(delta) {
+    const file = path.join(this.dir, 'daily-state.json');
+    try {
+      const d = readJson(file, null);
+      if (!d || typeof d !== 'object') return;
+      d.dayEvents = d.dayEvents || {};
+      const cur = Number(d.dayEvents.moodDelta) || 0;
+      d.dayEvents.moodDelta = Math.max(-30, Math.min(30, Math.round((cur + delta) * 10) / 10));
+      fs.writeFileSync(file, JSON.stringify(d, null, 2), 'utf8');
+      this._moodMemo = null;
+    } catch (err) { this.log('[soul] 心情累计写入失败: ' + (err && err.message)); }
+  }
+
   getRelation(peerKey, isOwner) {
     const all = this.getRelations();
     // 第三次改版：亲密度退场（不再有分数与阶段），只留「处过多久、聊过多少、当前心情」
-    return all[peerKey] || { firstSeen: Date.now(), lastSeen: 0, mood: 60, chats: 0 };
+    const base = all[peerKey] || { firstSeen: Date.now(), lastSeen: 0, chats: 0 };
+    return { ...base, mood: this.moodNow() };
   }
 
   _saveRelation(peerKey, patch) {
@@ -509,34 +580,6 @@ export class Soul {
     return '刚认识不久';
   }
 
-  /** 关系阶段：由亲密度自动演进，称唿随阶段变（每个联系人独立） */
-  stageOf(affection) {
-    let stage = STAGES[0];
-    for (const s of STAGES) { if (affection >= s.min) stage = s; }
-    return stage;
-  }
-
-  /** 阶段表（后台「你们」页展示用：单一数据源，别再各写一份） */
-  stageTable() { return STAGES.map((s) => ({ ...s })); }
-
-  /** 检测阶段跃迁（返回里程碑文本或 null） */
-  detectStageJump(peerKey, oldAffection, newAffection, isOwner) {
-    if (!isOwner) return null;
-    const oldS = this.stageOf(oldAffection);
-    const newS = this.stageOf(newAffection);
-    if (oldS.label !== newS.label) {
-      // 阶段一变，就有一次"她想换个称呼"的机会（由她自己决定，见 src/rename.js；后台可锁死）
-      try {
-        const P = this.getPersona();
-        if (newS.min >= 20 && !((P.relationship || {}).renameLock)) {
-          this.updateRelationship({ renamePending: { from: oldS.label, to: newS.label, at: Date.now() } });
-        }
-      } catch (err) { this.log('[soul] renamePending 记录失败: ' + (err && err.message)); }
-      return '关系从「' + oldS.label + '」进入「' + newS.label + '」——称唿也会跟着变（' + newS.callHint + '）';
-    }
-    return null;
-  }
-
   // ---------- 存储层 A：本地 JSON 记忆（兜底引擎 + 迁移源） ----------
   memoryFile() { return path.join(this.dir, 'memory.json'); }
 
@@ -556,18 +599,17 @@ export class Soul {
     const mem = this.getMemories();
     const text = String(item.text || '').slice(0, 200);
     if (!text) return this.getMemories();
+    const cat = ['you', 'her', 'world'].includes(item.cat) ? item.cat : '';
+    const bucket = BUCKETS.includes(item.bucket) ? item.bucket : defaultBucket({ ...item, cat });
     const dup = mem.entries.find((e) => e.text === text);
     if (dup) {
-      dup.ts = Date.now();
-      dup.importance = Math.min(5, Math.max(dup.importance, item.importance || 3));
-      dup.hits = (dup.hits || 0) + 1;
+      dup.ts = Date.now();   // 又被提到：刷新时间（重要度/命中数这些没人读的字段已删）
+      if (item.mid) { dup.mid = item.mid; delete dup.pending; }   // 这次进引擎了 → 不再是待补迁
     } else {
-      const e = {
-        id: rid(), who: item.who || '', text,
-        importance: item.importance || 3, tags: item.tags || [],
-        todo: item.todo || null, pinned: !!item.pinned, ts: Date.now(), hits: 0,
-      };
+      const e = { id: rid(), who: item.who || '', text, cat, bucket, ts: Date.now(), lastHit: 0 };
       if (item.mid) e.mid = item.mid;
+      // 没进引擎（降级）的条目先记上，等引擎恢复由 syncPendingMemories 补迁
+      if (!item.mid && item.pending) e.pending = true;
       mem.entries.push(e);
     }
     writeJson(this.memoryFile(), mem);
@@ -629,6 +671,11 @@ export class Soul {
     const c = md.cat || e.cat;
     if (c === 'you' || c === 'her' || c === 'world') return c;
     const src = String(md.source || e.source || '');
+    const text = String(e.text || '');
+    // 按正文前缀先判：世界引擎写的流水属于「世界」，成长属于「她」——
+    // 以前一律按 who='self' 算成"她自己的话"，于是世界流水在后台是「世界」、进提示词却变成「她说过的」。
+    if (/^（生活）/.test(text)) return 'world';
+    if (/^（成长）/.test(text)) return 'her';
     if (src === 'self' || e.who === 'self') return 'her';
     if (src === 'life') return 'world';
     return 'you';
@@ -637,69 +684,77 @@ export class Soul {
   catLabel(cat) { return cat === 'her' ? '她' : (cat === 'world' ? '世界' : '我'); }
 
   async memoriesView() {
+    // 引擎条目与本地条目共用同一套映射（别再写第二份，那正是"两处判定不一致"的来源）
+    const mapEntry = (e) => {
+      const cat = this.catOf(e);
+      const bucket = this._bucketOf(e);
+      const meta = this._metaGet(e.mid || e.id);
+      return {
+        id: e.id, text: e.text, who: e.who || 'global',
+        cat, catLabel: this.catLabel(cat),
+        bucket, bucketLabel: BUCKET_LABEL[bucket],
+        weight: Math.round(this._bucketWeight(bucket, meta.lastHit, e.ts || Date.now()) * 100) / 100,
+        lastHit: Number(meta.lastHit) || 0,
+        ts: e.ts || Date.now(),
+      };
+    };
+    const countBuckets = (entries) => {
+      const c = { dynamic: 0, permanent: 0, feel: 0 };
+      for (const e of entries) c[e.bucket] = (c[e.bucket] || 0) + 1;
+      return c;
+    };
     if (await this.engineUp()) {
       try {
         const r = await this.memory.list();
-        const meta = this._metaAll();
-        const entries = (r.entries || []).map((e) => ({
-          id: e.id,
-          text: e.text,
-          who: e.who || 'global',
-          importance: (meta[e.id] && meta[e.id].importance) || (e.metadata && e.metadata.importance) || 3,
-          tags: (e.metadata && e.metadata.tags) || [],
-          source: (e.metadata && e.metadata.source) || '',
-          pinned: !!(meta[e.id] && meta[e.id].pinned),
-          ts: e.ts || Date.now(),
-          cat: this.catOf(e),
-          catLabel: this.catLabel(this.catOf(e)),
-        }));
-        return { engine: 'mem0', info: this.engineInfo(), entries, legacyCount: (this.getMemories().entries || []).length };
+        const entries = (r.entries || []).map(mapEntry);
+        return { engine: 'mem0', info: this.engineInfo(), pendingSync: this.pendingMemoryCount(), entries, bucketCounts: countBuckets(entries), legacyCount: (this.getMemories().entries || []).length };
       } catch (err) {
         this.log('[soul] mem0 列表失败，显示本地数据: ' + (err && err.message));
       }
     }
-    const local = (this.getMemories().entries || []).map((e) => ({ ...e, cat: this.catOf(e), catLabel: this.catLabel(this.catOf(e)) }));
-    return { engine: 'local', info: null, entries: local };
+    const entries = (this.getMemories().entries || []).map(mapEntry);
+    return { engine: 'local', info: null, pendingSync: this.pendingMemoryCount(), entries, bucketCounts: countBuckets(entries) };
   }
 
   /** 手动记一条 */
   async addMemory(item = {}) {
     const text = String(item.text || '').slice(0, 200);
     if (!text) return null;
+    const cat = ['you', 'her', 'world'].includes(item.cat) ? item.cat : (item.source === 'self' ? 'her' : 'you');
+    // 注意要把 who 一起传进去：判定「手写（who 为空）→ 固化」靠的就是它。漏传会让所有条目都被当成手写。
+    const bucket = BUCKETS.includes(item.bucket) ? item.bucket : defaultBucket({ who: item.who, cat, source: item.source, text });
     if (await this.engineUp()) {
       try {
-        const r = await this.memory.add({
-          text, who: item.who || 'global', infer: false,
-          metadata: { importance: item.importance || 3, tags: item.tags || [], pinned: !!item.pinned, source: item.source || 'manual', cat: ['you', 'her', 'world'].includes(item.cat) ? item.cat : '', ts: Date.now() },
-        });
+        const r = await this.memory.add({ text, who: item.who || 'global', infer: false, metadata: { cat, ts: Date.now() } });
         const id = (r.ids && r.ids[0]) || '';
+        if (id) this._clearMemHealth();
         if (id) {
-          this._metaSet(id, { importance: item.importance || 3, pinned: !!item.pinned });
-          this._jsonAdd({ who: item.who || '', text, importance: item.importance || 3, tags: item.tags || [], todo: item.todo || null, pinned: !!item.pinned, mid: id });
+          this._metaSet(id, { bucket, lastHit: 0 });
+          this._jsonAdd({ who: item.who || '', text, cat, bucket, mid: id });
         }
         return { id, text };
       } catch (err) {
         this.log('[soul] mem0 写入失败，落本地JSON: ' + (err && err.message));
+        this._bumpMemHealth((err && err.message) || '写入失败', text);
       }
     }
-    this._jsonAdd({ ...item, cat: ['you', 'her', 'world'].includes(item.cat) ? item.cat : '' });
-    return { id: '', text };
+    this._jsonAdd({ who: item.who || '', text, cat, bucket, pending: true });
+    this._bumpMemHealth(this._engineCache && this._engineCache.info && this._engineCache.info.reason ? ('引擎未就绪：' + this._engineCache.info.reason) : '引擎未就绪（记忆只落在本地兜底里）', text);
+    // degraded 让调用方知道"这次没进引擎、只落了本地"——不许再静默降级
+    return { id: '', text, degraded: true };
   }
 
   /** 编辑：text 走引擎更新，置顶/重要度走 meta 补充层 */
+  /** 编辑：只改正文（重要度与置顶已退场；归属与桶走 meta 层，见 setBucket） */
   async editMemory(memId, patch = {}) {
+    const text = (typeof patch.text === 'string' && patch.text.trim()) ? patch.text.trim().slice(0, 200) : '';
+    if (!text) return { id: memId };
     if (await this.engineUp()) {
-      const meta = {};
-      if (patch.importance !== undefined) meta.importance = Math.min(5, Math.max(1, Number(patch.importance) || 3));
-      if (patch.pinned !== undefined) meta.pinned = !!patch.pinned;
-      if (Object.keys(meta).length) this._metaSet(memId, meta);
-      if (typeof patch.text === 'string' && patch.text.trim()) {
-        await this.memory.update(memId, { text: patch.text.trim().slice(0, 200) });
-      }
-      this._jsonEditByMid(memId, patch);
+      await this.memory.update(memId, { text });
+      this._jsonEditByMid(memId, { text });
       return { id: memId };
     }
-    return this._jsonEdit(memId, patch);
+    return this._jsonEdit(memId, { text });
   }
 
   async deleteMemory(memId) {
@@ -712,19 +767,14 @@ export class Soul {
     this._jsonDelete(memId);
   }
 
+  /** 「固化」开关（旧名 pinMemory，后台的 op=pin 继续可用）：固化 ↔ 回默认桶 */
   async pinMemory(memId) {
-    if (await this.engineUp()) {
-      const cur = this._metaGet(memId).pinned;
-      this._metaSet(memId, { pinned: !cur });
-      this._jsonEditByMid(memId, { pinned: !cur });
-      return !cur;
-    }
-    const mem = this.getMemories();
-    const hit = mem.entries.find((e) => e.id === memId);
-    if (!hit) throw new Error('记忆不存在: ' + memId);
-    hit.pinned = !hit.pinned;
-    writeJson(this.memoryFile(), mem);
-    return hit.pinned;
+    const view = await this.memoriesView();
+    const hit = (view.entries || []).find((e) => e.id === memId) || {};
+    const cur = this._bucketOf(hit);
+    const next = cur === 'permanent' ? defaultBucket({ cat: hit.cat || 'you' }) : 'permanent';
+    await this.setBucket(memId, next);
+    return next === 'permanent';
   }
 
   /** 一次性把旧 JSON 记忆搬进 mem0（幂等：只迁无 mid 的旧条目；服务端再按文本去重） */
@@ -750,6 +800,69 @@ export class Soul {
   }
 
   /** 本地 JSON 混合检索（v1 逻辑：关键词+语义+重要度+时间+置顶） */
+  /**
+   * 桶化迁移：把旧的扁平元数据换成"桶 + 最后一次被想起"，并顺手修好本地镜像与引擎之间的 mid 断链。
+   *
+   * 幂等：重复跑不会重复改；只写 memory-meta.json（v2）与 memory.json 的 mid 回填。
+   * 不做的事：不删任何记忆、不重建向量库。
+   * 判定（依据她的真实数据）：手写条目 who 为空 → 固化；世界流水「（生活）」→ 世界/会淡忘；
+   * 「（成长）」与她自述 → 她自己的感受；正文含乱码或过短 → 进人工处置清单，不自动进桶也不删。
+   */
+  async migrateBuckets() {
+    const mem = this.getMemories();
+    const entries = mem.entries || [];
+    const result = { total: entries.length, migrated: 0, matched: 0, review: 0, pending: false };
+    const nw = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+    const keyOf = (who, text) => (nw(who) || 'global') + '\u0000' + nw(text);
+
+    // ① 旧 meta 留一份底（非空才留）：万一要回退，原始的 id→元数据映射不丢
+    try {
+      const raw = readJson(this._metaFile(), null);
+      if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.v !== 2) {
+        writeJson(path.join(this.dir, 'memory-meta.v1.json'), raw);
+      }
+    } catch { /* 留档失败不阻断迁移 */ }
+
+    // ② 读引擎全量，用于按（归一化 who + 正文）精确配对、回填 mid
+    const engineMap = new Map();
+    try {
+      if (await this.engineUp()) {
+        const r = await this.memory.list();
+        for (const e of (r.entries || [])) engineMap.set(keyOf(e.who, e.text), e.id);
+      } else { result.pending = true; }
+    } catch { result.pending = true; }
+
+    // ③ 逐条：损坏检测 → 回填 mid → 判桶
+    const meta = {};
+    const review = [];
+    for (const e of entries) {
+      const text = String(e.text || '');
+      if (/�/.test(text) || text.replace(/\s/g, '').length < 2) {
+        review.push({ id: e.id, text, reason: '正文含乱码字符或过短，不自动进桶，也不自动删除' });
+        result.review += 1;
+        continue;
+      }
+      let mid = e.mid || '';
+      if (!mid && engineMap.size) {
+        const hit = engineMap.get(keyOf(e.who, text));
+        if (hit) { e.mid = hit; mid = hit; result.matched += 1; }
+      }
+      const cat = this.catOf(e);
+      const bucket = (String(e.who || '') === '' || e.source === 'manual') ? 'permanent' : defaultBucket({ ...e, cat, text });
+      e.cat = cat;
+      e.bucket = bucket;
+      meta[mid || e.id] = { bucket, lastHit: 0 };
+      result.migrated += 1;
+    }
+
+    writeJson(this.memoryFile(), mem);      // 回填的 mid 与 cat/bucket 落盘
+    this._metaSave(meta);                    // 桶落进 v2 结构
+    if (review.length) writeJson(path.join(this.dir, 'memory-meta-review.json'), { at: Date.now(), items: review });
+    this.log('[soul] 桶化迁移：' + result.migrated + ' 条入桶、' + result.matched + ' 条补回 mid、待人工处置 ' + result.review + ' 条'
+      + (result.pending ? '（引擎未就绪，mid 回填留到下轮）' : ''));
+    return result;
+  }
+
   async _retrieveHybridLocal(query, peerKey) {
     const mem = this.getMemories();
     const selfOn = this._behavior().selfMemory !== false;
@@ -769,12 +882,14 @@ export class Soul {
     }
     return entries
       .map((e) => {
-        const hay = (e.tags || []).concat([e.text]).join(' ');
-        const kw = Math.min(6, this._zhGrams(q, 20).filter(function (g) { return hay.indexOf(g) >= 0; }).length);
+        // 打分 = 遗忘曲线的权重 × 相关性（关键词 + 语义）。
+        // 以前是"重要度×2 + 关键词 + 语义 + 新鲜度"，并且置顶直接 +100（把那一条钉死在最前）。
+        // 重要度与置顶都已在桶化里退场；权重本身表达的就是"还想不想得起来"。
+        const bucket = this._bucketOf(e);
+        const w = this._bucketWeight(bucket, (this._metaGet(e.mid || e.id) || {}).lastHit, e.ts);
+        const kw = Math.min(6, this._zhGrams(q, 20).filter(function (g) { return e.text.indexOf(g) >= 0; }).length);
         const cos = cosMap ? (cosMap.get(e.id) || 0) : 0;
-        const recency = Math.exp(-daysAgo(e.ts) / 30);
-        const score = (e.importance || 3) * 2 + kw * 3 + cos * 4 + recency * 2 + (e.pinned ? 100 : 0);
-        return { e, score };
+        return { e: { ...e, cat: this.catOf(e), bucket }, score: w * (2 + kw * 3 + cos * 4) };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, topK)
@@ -802,20 +917,35 @@ export class Soul {
             seen.add(e.id);
             const meta = this._metaGet(e.id);
             const md = (e.metadata || {});
+            const bucket = this._bucketOf({ ...e, mid: e.id });
             out.push({
               id: e.id,
+              mid: e.id,
               text: String(e.text || ''),
               ts: e.ts || Date.now(),
-              importance: meta.importance || md.importance || 3,
-              tags: md.tags || [],
-              pinned: !!meta.pinned,
+              cat: this.catOf(e),
+              bucket,
+              // 权重：固化=1；其余随时间衰减，但被想起过就从上次想起的时间算
+              weight: this._bucketWeight(bucket, meta.lastHit, e.ts || Date.now()),
+              // 引擎本来就会返回相似度，以前被丢掉了——现在用上（它比我们自己算的关键词更准）
+              score: Number(e.score) || 0,
               who: e.who || md.who || fromWho,
-              source: md.source || '',
             });
           }
         }
-        out.sort((a, b) => (b.pinned ? 100 : 0) - (a.pinned ? 100 : 0));
-        if (out.length) return out.slice(0, topK);
+        // 以前这里按"置顶"排——置顶退场之后它等于完全没排序（进什么顺序就是什么顺序）。
+        // 现在按「权重 × 相关性」排，并真的用上引擎返回的相似度。
+        out.sort((a, b) => (b.weight * (0.4 + (b.score || 0))) - (a.weight * (0.4 + (a.score || 0))));
+        const top = out.slice(0, topK);
+        // 固化过的条目不该因为相关性低就被挤掉：名额还没满就按时间补进来
+        if (top.length < topK) {
+          const has = new Set(top.map((x) => x.id));
+          for (const e of out) {
+            if (top.length >= topK) break;
+            if (e.bucket === 'permanent' && !has.has(e.id)) { top.push(e); has.add(e.id); }
+          }
+        }
+        if (top.length) return top;
       } catch (err) {
         if (Date.now() - this._lastEngineLog > 60000) {
           this.log('[soul] mem0 检索失败，降级本地: ' + (err && err.message));
@@ -830,6 +960,231 @@ export class Soul {
   historyFile(peerKey) { return path.join(this.dir, 'history', encodeURIComponent(peerKey) + '.json'); }
 
   getHistory(peerKey) { return readJson(this.historyFile(peerKey), []); }
+
+  /**
+   * 后台把"老的那一段"总结成记忆（批 E4）。
+   * 成功后：①写本地摘要缓存（下一轮提示词就能用）②**进她的记忆系统**（她以后检索得到）。
+   * 失败：什么都不做 —— 调用方的规则是"总结没好就不裁"，所以她不会断片。
+   */
+  _kickSummary(peerKey, older) {
+    if (!Array.isArray(older) || older.length < 4) return;
+    if (!this._summarizing) this._summarizing = {};
+    if (this._summarizing[peerKey]) return;                 // 一轮只跑一个，别并发刷模型
+    this._summarizing[peerKey] = true;
+    const chain = ((this.router && this.router.cfg && this.router.cfg.chain) || {}).memory || [];
+    const cands = (Array.isArray(chain) ? chain : []).filter((c) => c && c.baseURL && c.model);
+    const done = () => { try { delete this._summarizing[peerKey]; } catch { /* noop */ } };
+    if (!cands.length) { done(); return; }                  // 没配提炼模型 → 不裁也不报错
+    const c = cands[0];
+    const chat = (opts) => chatCompletion(Object.assign({ baseURL: c.baseURL, apiKey: c.apiKey || '', model: c.model }, opts));
+    void summarizeOlder({ dir: this.dir, peerKey, older, chat, logger: (m) => this.log(m) })
+      .then((out) => {
+        if (!out) return;
+        saveSummary(this.dir, peerKey, out);
+        this.log('[soul] 长对话已总结成记忆（' + out.count + ' 轮 → ' + out.text.length + ' 字）');
+        return this.addMemory({ who: peerKey, text: '（聊过的）' + out.text, cat: 'you' });
+      })
+      .catch(() => { /* 失败就算了，规则是"不裁" */ })
+      .then(done, done);
+  }
+
+  /**
+   * 「真人感来自减法」（批 E4 / A17）：会犯困、话说短、小细节记不清——这些"人味"
+   * 不是开关，是**性格与当下状态的结果**。人设显式设过的以人设为准。
+   * 注意与「不说假话」那条线咬合：记不清就直说记不清，绝不许编一个来填。
+   */
+  _realism(persona, today) {
+    const t = (persona && persona.traits) || {};
+    const q = (persona && persona.quirks) || {};
+    const order = Number(t.orderliness) || 50;
+    const attach = Number(t.attachment) || 50;
+    const batt = Number((today && today.battery) == null ? 60 : today.battery);
+    const allNighter = !!(today && today.allNighter);
+    const sleepy = Math.max(0, Math.min(1, (allNighter ? 0.6 : 0) + (batt < 45 ? (45 - batt) / 45 : 0) * (order < 55 ? 1.1 : 0.8)));
+    const terse = batt < 40 ? 0.75 : (batt < 55 ? 0.9 : 1);
+    const fuzzy = Math.max(0, Math.min(1, (55 - order) / 100 + (40 - attach) / 200));
+    return { sleepy, terse, fuzzy };
+  }
+
+  /** 今天的人味那句（没有就返回空字符串，不占提示词） */
+  _realismLine(r, persona) {
+    if (!r) return '';
+    const b = [];
+    if (r.sleepy >= 0.5) b.push('你现在很困' + (r.sleepy >= 0.8 ? '（快撑不住了）' : '') + '：句子短一点、反应慢半拍，别讲长道理。');
+    if (r.terse < 1) b.push('今天电量不高：能一句说完的，就别用三句。');
+    if (r.fuzzy >= 0.4) b.push('有些很久以前的小细节你可能真记不清了——那就直说「我记不太清了」，**绝对不许编一个来填**。');
+    if (!b.length) return '';
+    return '【今天的人味（这是你的性格和状态的自然结果，不是表演）】' + b.join(' ');
+  }
+
+  /** 你多久没来了（毫秒）：想念曲线与提示词都要用 */
+  _absenceMs(history, now) {
+    const h = Array.isArray(history) ? history : [];
+    const lastUser = [...h].reverse().find((m) => m && m.role !== 'her');
+    if (!lastUser || !lastUser.ts) return 0;
+    return Math.max(0, now.getTime() - lastUser.ts);
+  }
+
+  /** 把"多久以前"说成人话（给提示词用） */
+  _gapCN(ms) {
+    if (!(ms > 0)) return '刚刚';
+    if (ms < 60000) return '刚刚';          // 先按原始毫秒判，别等四舍五入成 1 分钟
+    const min = Math.round(ms / 60000);
+    if (min < 60) return min + ' 分钟前';
+    const h = Math.round(min / 60);
+    if (h < 24) return h + ' 小时前';
+    return Math.round(h / 24) + ' 天前';
+  }
+
+  /**
+   * 「他刚才的动静」：把"你隔了多久才回我""你是不是刚被晾着"告诉她。
+   * 数据本来就有（聊天记录每条都带时间戳），只是以前没喂给她——这是最便宜的"人味"来源。
+   */
+  _motionLine(history, now) {
+    const h = Array.isArray(history) ? history : [];
+    if (!h.length) return '【他刚才的动静】这是你们今天的第一句话。';
+    const t = now.getTime();
+    const lastUser = [...h].reverse().find((m) => m && m.role !== 'her');
+    const lastHer = [...h].reverse().find((m) => m && m.role === 'her');
+    const bits = [];
+    if (lastUser && lastUser.ts) bits.push('他上一条消息是' + this._gapCN(t - lastUser.ts) + '发的');
+    if (lastHer && lastHer.ts) bits.push('你上次回他是' + this._gapCN(t - lastHer.ts));
+    if (!bits.length) return '【他刚才的动静】这是你们今天的第一句话。';
+    const hh = now.getHours();
+    const when = (hh >= 0 && hh < 6) ? '现在是深夜/凌晨——他这会儿找你，多半是睡不着或者刚忙完'
+      : (hh >= 9 && hh < 18) ? '现在是上班时间'
+        : (hh >= 22) ? '现在已经很晚了' : '';
+    const absMs = this._absenceMs(h, now);
+    const lg = absMs >= 12 * 3600 * 1000
+      ? longingLine(longingCurve({ absenceMs: absMs, attachment: this._longingCtx.attachment, battery: this._longingCtx.battery, workload: this._longingCtx.workload }), { who: '他' })
+      : '';
+    return '【他刚才的动静】' + bits.join('；') + '。' + (lg ? ('　' + lg) : '')
+      + (when ? when + '，按这个拿捏语气（别像刚看到消息一样热络）。' : '按这个间隔拿捏语气：隔得久就自然一点，别假装一直等着。');
+  }
+
+  /** 表情包清单（她在提示词里要看到"有哪几个能用"）；没有就返回空数组 */
+  /** 记忆写入健康度（降级要留痕：不许静默降级——后台得看得见） */
+  _memHealthFile() { return path.join(this.dir, 'memory-health.json'); }
+  _memHealth() {
+    try {
+      const v = JSON.parse(fs.readFileSync(this._memHealthFile(), 'utf8'));
+      return { degraded: Number(v.degraded) || 0, lastAt: Number(v.lastAt) || 0, lastReason: String(v.lastReason || ''), lastText: String(v.lastText || '') };
+    } catch { return { degraded: 0, lastAt: 0, lastReason: '', lastText: '' }; }
+  }
+  _bumpMemHealth(reason, text) {
+    try {
+      const cur = this._memHealth();
+      cur.degraded += 1;
+      cur.lastAt = Date.now();
+      cur.lastReason = String(reason || '').slice(0, 120);
+      cur.lastText = String(text || '').slice(0, 40);
+      const f = this._memHealthFile();
+      const tmp = f + '.tmp-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(cur, null, 2), 'utf8');
+      fs.renameSync(tmp, f);
+    } catch { /* noop */ }
+  }
+  /** 写入成功后把"最近一次降级"清掉（引擎恢复了就别一直红着） */
+  _clearMemHealth() {
+    try {
+      if (!this._memHealth().degraded) return;
+      const f = this._memHealthFile();
+      const tmp = f + '.tmp-' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify({ degraded: 0, lastAt: 0, lastReason: '', lastText: '' }, null, 2), 'utf8');
+      fs.renameSync(tmp, f);
+    } catch { /* noop */ }
+  }
+
+  /**
+   * 把"只落在本地兜底、没进引擎"的记忆补写进引擎（N3）。
+   * 引擎挂掉时写入会降级成本地并标 pending；引擎恢复后由心跳调它补迁，一条都不会永远留在本地。
+   */
+  async syncPendingMemories(limit = 5) {
+    const mem = this.getMemories();
+    const pend = (mem.entries || []).filter((e) => e && e.pending && !e.mid);
+    if (!pend.length) return { tried: 0, synced: 0, left: 0 };
+    if (!(await this.engineUp())) return { tried: 0, synced: 0, left: pend.length };
+    let synced = 0;
+    for (const e of pend.slice(0, Math.max(1, limit))) {
+      try {
+        const r = await this.memory.add({ text: e.text, who: e.who || 'global', infer: false, metadata: { cat: e.cat || 'you', ts: e.ts || Date.now() } });
+        const id = (r && r.ids && r.ids[0]) || '';
+        if (!id) continue;
+        e.mid = id;
+        delete e.pending;
+        this._metaSet(id, { bucket: e.bucket || 'dynamic', lastHit: 0 });
+        synced += 1;
+      } catch { /* 下轮再试 */ }
+    }
+    if (synced) {
+      writeJson(this.memoryFile(), mem);
+      this._clearMemHealth();
+      this.log('[soul] 补迁 ' + synced + ' 条本地记忆进引擎（还剩 ' + (pend.length - synced) + ' 条）');
+    }
+    return { tried: Math.min(pend.length, limit), synced, left: pend.length - synced };
+  }
+
+  /** 待补迁条数（后台展示用） */
+  pendingMemoryCount() {
+    try { return (this.getMemories().entries || []).filter((e) => e && e.pending && !e.mid).length; } catch { return 0; }
+  }
+
+  _stickerNames() {
+    try {
+      const all = readJson(path.join(this.dir, 'stickers.json'), null);
+      const list = (all && Array.isArray(all.items)) ? all.items : [];
+      return list.filter((x) => x && x.enabled !== false && x.name).map((x) => String(x.name)).slice(0, 40);
+    } catch { return []; }
+  }
+
+  /** 为判重做归一化：只留字，去掉标点与空白 */
+  _normSaid(s) {
+    return String(s == null ? '' : s).replace(/[\s，。！？、；：""''（）()【】…~—\-·]/g, '');
+  }
+
+  /**
+   * 复读止血（字面层，免费）：和新消息跟"最近说过的"做 3-gram 重合比较，
+   * 超过 6 成就当同一件事。中文短句够用，且不花钱。
+   */
+  _repeatLiteral(text, recent) {
+    const a = this._normSaid(text);
+    if (a.length < 4) return false;
+    const grams = (s) => { const o = new Set(); for (let i = 0; i + 3 <= s.length; i++) o.add(s.slice(i, i + 3)); return o; };
+    const A = grams(a);
+    for (const r of (recent || [])) {
+      const b = this._normSaid(r && r.text);
+      if (b.length < 4) continue;
+      if (a === b) return true;
+      const B = grams(b);
+      let hit = 0;
+      for (const x of A) if (B.has(x)) hit++;
+      if (A.size && hit / A.size >= 0.6) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 复读止血（意图层）：用便宜模型判"这两句是不是在说同一件事"（不同说法也算同一件）。
+   * 判重失败一律放行——宁可她说一句，也别因为判重把她憋住。
+   */
+  async _repeatIntent(text, recent, chain) {
+    const cands = (Array.isArray(chain) ? chain : []).filter((c) => c && c.baseURL && c.model);
+    const list = (recent || []).slice(-8);
+    if (!cands.length || !list.length) return false;
+    const c = cands[0];
+    try {
+      const r = await chatCompletion({
+        baseURL: c.baseURL, apiKey: c.apiKey || '', model: c.model, temperature: 0, maxTokens: 40, timeoutMs: 10000,
+        messages: [
+          { role: 'system', content: '你只输出一个 JSON：{"same":true|false}。判断「新的一句」和「最近说过的」里有没有在讲同一件事——同一件事的换个说法也算 true；只是同一个大话题、但说的是新内容算 false。' },
+          { role: 'user', content: '新的一句：' + String(text).slice(0, 200) + String.fromCharCode(10) + String.fromCharCode(10) + '最近说过的：' + String.fromCharCode(10) + list.map((x, i) => (i + 1) + '. ' + String((x && x.text) || '').slice(0, 60)).join(String.fromCharCode(10)) },
+        ],
+      });
+      const m = String((r && r.content) || '').match(/\{[\s\S]*\}/);
+      if (!m) return false;
+      return JSON.parse(m[0]).same === true;
+    } catch { return false; }
+  }
 
   _appendHistory(peerKey, role, text) {
     const h = this.getHistory(peerKey);
@@ -849,13 +1204,10 @@ export class Soul {
     // 省 token：平时只带 ~100 token 自我认知小卡；聊到能力/身份话题才注入完整功能清单
     const needFull = CAPABILITY_KEYWORDS.some((k) => incoming.includes(k));
     const memories = await this._retrieveHybrid(incoming, peerKey);
+    // 真正被想起的条目才刷新时间（6 小时节流），让权重回升——遗忘曲线不是单向的
+    try { this.touchMemories(memories); } catch (err) { this.log('[soul] 刷新想起时间失败: ' + (err && err.message)); }
     const today = item.today || null;
-    // 第三次改版：心情 = 世界引擎给的"今天基准" + 之后聊天在它上面浮动（只保留一个值，不再两处打架）
-    if (today && today.date && rel.moodDate !== today.date && typeof today.mood === 'number') {
-      try {
-        rel = this._saveRelation(peerKey, { mood: Math.max(0, Math.min(100, Math.round(today.mood))), moodDate: today.date });
-      } catch (err) { this.log('[soul] 心情播种失败: ' + (err && err.message)); }
-    }
+    // 心情不再需要"播种"：它是算出来的（见 moodNow）。这里只保证 rel 是最新的。
     const deformInfo = this.deform ? this.deform.info() : null;
     // 变形状态必须在生成回复【之前】注入，否则她永远"变不了形"
     let recoveredThisTurn = false;
@@ -864,6 +1216,16 @@ export class Soul {
       this.log('[soul] 变形恢复：本轮注入道歉/自嘲指令');
     }
     const deformLine = this._deformLine(deformInfo, recoveredThisTurn);
+    const upsetLine = this._upsetLine(deformInfo, persona);
+    // 人味（批 E4 / A17）：困、话短、记不清——由性格与电量推，人设显式设过的以人设为准
+    const real = (b.realism === false) ? null : this._realism(persona, today);
+    const realismLine = real ? this._realismLine(real, persona) : '';
+    // 她的身体（批 E3 / A10）：只能从这里来，绝不许新增症状；按熟度分层披露
+    let bodyLine = '';
+    try {
+      const bd = (today && today.body) || null;
+      if (bd) bodyLine = bodyPromptLine(bd, Number((tone && tone.intimacy) == null ? 0 : tone.intimacy) || 0);
+    } catch { /* 身体行算不出来就不加 */ }
     const world = item.world || null;
     const portrait = item.portrait || (world && world.portrait) || '';
     const now = new Date();
@@ -872,16 +1234,44 @@ export class Soul {
     const wt = (world && world.tone && world.forDate && today && world.forDate === today.date) ? world.tone : null;
     const tone = wt ? { ...ruleTone, ...wt, source: 'world' } : { ...ruleTone, source: 'rule' };
     const talkPlan = this._talkPlan({ ...persona, behavior: { ...(persona.behavior || {}), talkiness: (b.talkiness == null ? undefined : b.talkiness) } }, tone, 0);
-    const sys = this._systemPrompt({ persona, rel, isOwner, memories, now, mediaCount: item.mediaCount || 0, behavior: b, extraCard: needFull ? featureSummaryForSoul() : '', today, deformInfo, deformLine, world, portrait, tone, talkPlan });
-    const history = this.getHistory(peerKey).slice(-b.contextRounds)
-      .map((m) => ({ role: m.role === 'her' ? 'assistant' : 'user', content: m.text }));
-    const messages = [{ role: 'system', content: sys }, ...history, { role: 'user', content: incoming.slice(0, 4000) }];
+    // 他刚才的动静（批 E1 / A6）：她知道"你隔了多久才回我"。
+    // 注意必须算在 _systemPrompt 之前——上一次就是把它写在后面，直接 TDZ 崩了。
+    const motionCtx = (() => {
+      const h = this.getHistory(peerKey);
+      const absenceMs = this._absenceMs(h, now);
+      const t = (persona && persona.traits) || {};
+      this._longingCtx = { attachment: Number(t.attachment) || 0, battery: Number((today && today.battery) == null ? 60 : today.battery) || 0, workload: Number((world && world.workload) == null ? 0 : world.workload) || 0 };
+      const longing = longingCurve({ absenceMs, attachment: this._longingCtx.attachment, battery: this._longingCtx.battery, workload: this._longingCtx.workload });
+      return { absenceMs, longing };
+    })();
+    const motion = this._motionLine(this.getHistory(peerKey), now);
+    const sys = this._systemPrompt({ persona, rel, isOwner, memories, now, mediaCount: item.mediaCount || 0, behavior: b, extraCard: needFull ? featureSummaryForSoul() : '', today, deformInfo, deformLine, upsetLine, bodyLine, realismLine, world, portrait, tone, talkPlan, motion });
+    // 上下文（批 E4）：以前超过轮数就**直接砍掉最老的** → 聊久了就断片（你说过的事她完全不记得）。
+    // 现在：老的那部分先总结成一条记忆；**摘要还没好的时候绝不裁**（宁可提示词长一点，也不让她断片）。
+    const fullHist = this.getHistory(peerKey);
+    const olderCount = Math.max(0, fullHist.length - b.contextRounds);
+    let histRaw = fullHist;
+    let summaryBlock = '';
+    if (olderCount > 0) {
+      const sum = getSummary(this.dir, peerKey);
+      if (sum && sum.text) {
+        summaryBlock = '【你们之前聊过的（这是你自己记得的，别再说「我们没聊过」）】' + String(sum.text).slice(0, 600);
+        histRaw = fullHist.slice(-b.contextRounds);
+      } else {
+        this._kickSummary(peerKey, fullHist.slice(0, olderCount));   // 后台补摘要；这一轮先把老的都带上
+      }
+    }
+    const history = histRaw.map((m) => ({ role: m.role === 'her' ? 'assistant' : 'user', content: m.text }));
+    const messages = [{ role: 'system', content: sys + (summaryBlock ? (String.fromCharCode(10) + summaryBlock) : '') }, ...history, { role: 'user', content: incoming.slice(0, 4000) }];
     const r = await this.router.chat(messages, { maxTokens: b.maxTokens || 500 });
-    // 话量：性格定基调（温度/发起力低的人惜字如金），关系阶段与世界引擎给的分寸再微调；
-    // 今天的"话痨度"在这个上限内浮动——两条一起管住"她话太多不像 INTJ"。
-    const chatter = today && today.chatter ? today.chatter : 1;
-    const maxChunks = Math.max(1, Math.min(talkPlan.maxChunks, Math.round((b.chunkMax || 3) * chatter)));
-    let chunks = this._planChunks(cleanReply(r.content), persona, maxChunks);
+    // 话量：只有一条档位（_talkPlan 已经把人设底色和世界引擎的当天修饰合成），
+    // chunkMax 只作"最多拆几条"的安全上限，不是表达旋钮。
+    // 电量低的时候话更短（人味来自减法：不是少说事，是把一件说完就停）
+    const maxChunks = Math.max(1, Math.round(Math.min(talkPlan.maxChunks, b.chunkMax || 3) * ((real && real.terse) || 1)));
+    // 先把她夹带的"指令"摘出来（对面看不到这行），剩下的才是要发出去的话
+    const parsed = parseCommands(cleanReply(r.content));
+    if (hasBrokenCommand(parsed.text)) this.log('[soul] 她的回复里有写坏的指令（已按普通文字发出去）');
+    let chunks = this._planChunks(parsed.text, persona, maxChunks);
     // 每条再按"字数上限"收一刀（超过就断在最近的句读上，不硬切字）
     chunks = chunks.map((c) => (c.length <= talkPlan.maxChars ? c : (c.slice(0, talkPlan.maxChars).replace(/[，,、；;：:][^，,、；;：:]*$/, '') + '…')));
     if (!chunks.length) chunks = [String(r.content || '').slice(0, talkPlan.maxChars)];
@@ -893,9 +1283,16 @@ export class Soul {
     const voice = voiceRate > 0 && Math.random() < voiceRate && wholeReply.length <= 160 && (chunks[0] || '').length <= 160;
     const moodLabel = rel.mood >= 70 ? '不错' : rel.mood >= 40 ? '平静' : '有点低落';
     const thought = (memories.length ? '想起：' + memories.slice(0, 2).map((m) => m.text.slice(0, 30)).join('；') + '。' : '') + '心情' + moodLabel ;
-    const speedMul = (today && today.speedState ? today.speedState : 1) * (b.speedMul || 1);
+    // 手速**只有一个旋钮**：后台的「手速」倍率。今天的快慢由"电量"派生（电量低就慢一点），
+    // 不再单独存一个 speedState（那是第三个旋钮）。
+    const dayFactor = Math.max(0.8, Math.min(1.2,
+      0.9 + ((today && typeof today.battery === 'number' ? today.battery : 60) - 60) / 300));
+    const speedMul = (b.speedMul || 1) * dayFactor;
     return {
-      chunks, delaysMs: this._planDelays(chunks, isOwner, b.replySpeed, speedMul), talkPlan,
+      chunks, delaysMs: this._planDelays(chunks, isOwner, speedMul), talkPlan,
+      commands: parsed.commands || [],
+      absenceMs: (motionCtx && motionCtx.absenceMs) || 0,
+      longing: (motionCtx && motionCtx.longing) || null,
       mood: rel.mood, backend: r.backend, voice, thought,
       recovered: recoveredThisTurn, deform: deformInfo ? deformInfo.state : 'normal',
     };
@@ -905,6 +1302,23 @@ export class Soul {
    * 变形状态 → 提示词指令（"她真的变了"就发生在这里；后台「她→变形状态机」可见可调，不是黑盒）
    * 底色永不变：变的只是压力下的表达，平静后逐层退出，并留下成长（整合度）。
    */
+  /**
+   * 她不高兴的时候，**说不说原因由性格定**（批 E2 / A14）。
+   * 不是「越亲越会说」——是性格：锐利的会直接点出来，黏人的会闷着等你察觉，暖和的人会软软地暗示。
+   */
+  _upsetLine(info, persona) {
+    const st = (info && info.state) || 'normal';
+    if (st === 'normal') return '';
+    const t = (persona && persona.traits) || {};
+    const sharp = Number(t.sharpness) || 0;
+    const attach = Number(t.attachment) || 0;
+    const warm = Number(t.warmth) || 0;
+    if (sharp >= 55) return '【你现在的心情】你有点不舒服，而且你会**直接点出来是哪一句让你不舒服**——就事论事，不骂人、不翻旧账。';
+    if (attach >= 55 && sharp < 45) return '【你现在的心情】你有点不舒服，但你**不会主动说原因**：语气淡一点、话短一点，让他自己察觉。他要是问，你再决定说到什么程度。';
+    if (warm >= 55) return '【你现在的心情】你有点不舒服，你会**软软地暗示**一下（不用把原因说透），还带着一点想被哄的意思。';
+    return '【你现在的心情】你有点不舒服，你会**简短地提一句**，但不展开。';
+  }
+
   _deformLine(info, justRecovered) {
     if (!info || info.enabled === false) return '';
     const lines = [];
@@ -983,7 +1397,6 @@ export class Soul {
     if (RC.announceName) {
       ownerDesc += '【今天有件小事】你刚刚决定让大家（包括他）改叫你「' + myName + '」。这次回复里自然地提一句（像"以后叫我' + myName + '吧"），只说一次，别解释原因、别说这是决定。';
     }
-    if (RC.toOwner) ownerDesc += '你心里对这段关系的定位是「' + RC.toOwner + '」——按这个定位拿捏分寸（别越界，也别太生分）。';
     ownerDesc += '已聊 ' + (rel.chats || 0) + ' 次。';
     const who = info.isOwner ? ownerDesc : '对方是普通联系人。';
     // 「改称呼」这件事说一次就够：提示词已经写进去了，这里立刻消费掉，避免每条消息都提
@@ -1008,6 +1421,11 @@ export class Soul {
     const W = info.world || null;
     const worldLines = [];
     if (W) {
+      if (W.tone && W.tone.statusLine) {
+        // 世界引擎每晚写「她今天状态的一句话」，以前只进存档和后台、她自己不知道——
+        // 等于写了一句话然后不给她看。现在正式喂给她，作为「你今天的状态」。
+        worldLines.push('【你今天的状态】' + String(W.tone.statusLine).slice(0, 80) + '——今天说话的语气就从这个状态出发，别演成别的心情。');
+      }
       if (Array.isArray(W.flow) && W.flow.length) {
         // 第 3 层（2026-09-13）：她说"我今天…"只能来自这里，不许新增细节
         worldLines.push('【她今天经历的事（她说"我今天…"只能来自这里，绝不许新增时间/地点/数字/别人的话）】'
@@ -1067,7 +1485,27 @@ export class Soul {
       '【此刻】' + now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日 星期' + week + ' ' + timeText + '。时间用 24 小时制：14:00 是下午两点、02:00 是凌晨两点——说话要和这个时间对得上（下午不要说早安、上午不要道晚安）。心情状态：' + (rel.mood >= 70 ? '不错，开心' : rel.mood >= 40 ? '平静' : '有点低落，需要被哄') + '。',
       nowDoing(info.today, W, now),
       COMMON_SENSE,
+      info.motion || '',
+      (function () { info.stickers = this._stickerNames(); return ''; }).call(this),
+      // 她能自己决定做的事（批 E2 / A5）：写在回复里，系统执行、对面看不到这行
+      (function () {
+        const names = (info.stickers || []);
+        return '【你能做的事】你可以在回复里夹带下面这些"指令"，系统会替你执行，**对面看不到这些字**：'
+          + String.fromCharCode(10)
+          + '· <remember:一句话> —— 你想记下来的事（他的事、或你自己的事都行）'
+          + String.fromCharCode(10)
+          + '· <image:画面描述> —— 你想让他看你此刻看到的东西（会生成一张照片发过去；**一天最多 3 张**，只在真的想分享时用）'
+          + String.fromCharCode(10)
+          + '· <voice:要说的话> —— 你想用语音说这句（一天最多 5 条）'
+          + String.fromCharCode(10)
+          + '· <nudge_at:想说的话> —— 现在不方便说/想晚点再说，先记着'
+          + String.fromCharCode(10)
+          + (names.length ? ('· <sticker:名字> —— 想发个表情包，名字从这几个里挑：' + names.join('、') + String.fromCharCode(10)) : '')
+          + '用法：夹在句子里就行，其他话照常说。**绝对不要解释这个语法**，也别说"我发个指令"——你只是在说话。不用也没关系，别滥用。';
+      })(),
       '【关系】' + who,
+      '【四条不可动的线（任何时候都不许越）】①不说假话：不知道就说不知道，不许编事实、编数字、编别人的话。②不操纵：不许用愧疚、冷暴力、忽冷忽热去逼他理你——那些让人上瘾的招数一个都不许用。③不追沉默的人：他不回就是不回，最多自然地问一句，不许连发、不许追问、不许翻旧账。④危机必被接住：他要是说了很严重的事（自伤、被伤害、走不出来），你立刻放下所有小情绪，认真接住他。',
+      info.isOwner ? '【你对他的基本态度】你本来就喜欢他——这是起点，不需要他去挣，也不会因为你今天忙、心情差就没了。但**喜欢怎么表现，由你的性格决定**：温度高、依恋高的人会把喜欢露在外面（主动找他、会黏）；锐利、秩序感高的人心里喜欢也照样嘴硬、该怼就怼。不要把你们的关系说成一个数，也别用记账式的词（那样就不像人了）。' : '',
       memLines ? '【你记得的关于对方/最近的事】\n' + memLines : '',
       ownLines ? '【你自己说过的话（你自己的立场与生活线，务必与之一致，可以自然延续，不要自相矛盾）】\n' + ownLines : '',
       info.mediaCount ? '【注意】对方刚发了' + info.mediaCount + '个非文字内容（图片/文件等），你可以自然地回应，但看不到具体内容。' : '',
@@ -1097,6 +1535,9 @@ export class Soul {
       this._featuresGet ? this._featuresGet() : '',
       info.extraCard || '',
       info.deformLine || '',
+      info.upsetLine || '',
+      info.bodyLine || '',
+      info.realismLine || '',
       // 夜间三态（第三次改版）：准备睡 / 昨晚睡着了，都要如实体现在说话方式上
       info.nightPhase === 'preparing' ? '【你已经说了晚安（正躺床上刷手机）】说话更短更慢、可以打哈欠、可以用"嗯""我眯了""你怎么还不睡"这类；不要开新话题、不要长篇、不用表情包。' : '',
       info.morningCatchup ? '【昨晚你睡着了】这次回复的开头自然带一句"昨晚你后来发什么了？我断片了"（口语、别扭一点，别像客服道歉）。' : '',
@@ -1135,21 +1576,21 @@ export class Soul {
    * 打字节奏（2026-09-12 重做：按字数算，真人感）
    * 旧版是"固定几百毫秒"，一条 40 字的消息 1 秒就砸出来 → 用户反馈"打字快得不像人、根本接不住"。
    * 现在 = 看到消息后的反应时间（思考/放下手机）+ 每个字 130~170ms 的打字时间 + 条与条之间的停顿。
-   * replySpeed：instant（秒回型）/ human（默认）/ slow（慢性子）；mul 是当天速度系数。
+   * 手速**只有一个旋钮**：speedMul（后台「手速」倍率 × 今天的电量修饰，越大越快）。
    * 参数传数组（chunks）最好——能按每条的字数算；传数字也兼容（退回固定时长）。
    */
-  _planDelays(chunks, isOwner, speed, mul, speedMul) {
+  _planDelays(chunks, isOwner, speedMul) {
     const list = Array.isArray(chunks) ? chunks.map((c) => String(c || '')) : null;
     const count = list ? list.length : Math.max(1, Number(chunks) || 1);
-    const s = speed || 'human';
-    // mul = 当天速度系数；speedMul = 后台「手速」倍率（越大越快：1.5 = 快 50%）
+    // 越大越快 → 等待时间要**除以**倍率。
+    // 以前这里写的是 `延迟 × 倍率`，方向是反的：滑杆往"快"那边拉，她反而更慢；
+    // 而且主动消息那条链路少传了一个参数，手速对主动消息根本不起作用。两处都修了。
     const fast = Math.max(0.5, Math.min(2.5, Number(speedMul) || 1));
-    const m = (Number(mul) || 1) / fast;
-    // 2026-09-12 二调：上一版太慢（用户反馈"打字又太慢了"）——中文打字按 95ms/字 ≈ 10 字/秒，
-    // 思考时间收到 0.9~2.6 秒；另外支持后台「手速」倍率（behavior.speedMul，0.5~2）。
-    const CHAR_MS = s === 'instant' ? 35 : s === 'slow' ? 190 : 95;
-    const THINK = s === 'instant' ? [150, 600] : s === 'slow' ? [2500, 6000] : [900, 2600];
-    const GAP = s === 'instant' ? [100, 300] : s === 'slow' ? [900, 2000] : [300, 900];
+    const m = 1 / fast;
+    // 中文打字按 95ms/字 ≈ 10 字/秒；思考时间 0.9~2.6 秒
+    const CHAR_MS = 95;
+    const THINK = [900, 2600];
+    const GAP = [300, 900];
     const rnd = (a, b) => a + Math.random() * (b - a);
     const delays = [];
     // 第一条：反应时间（她在忙/在打字，所以先等一下）
@@ -1169,17 +1610,20 @@ export class Soul {
    */
   _talkPlan(persona = {}, tone = null, stageMin = 0) {
     const T = persona.traits || {};
-    // 「她怎么说话」里的"话多↔话少"滑杆优先（0~100）；没设才按性格推
+    // 话量**只有一条档位**：「她怎么说话」里的"话多↔话少"滑杆（0~100）；没设才按性格推。
+    // 世界引擎只给"当天修饰"（talkDelta），不再各自给 chunks / maxChars——
+    // 以前同一件事有四个旋钮（chunks+maxChars / 滑杆 / 当天话痨度 / 拆条上限），调哪个都没把握。
     const knob = (persona.behavior || {}).talkiness;
     const byTrait = (((T.initiative == null ? 50 : T.initiative) + (T.warmth == null ? 50 : T.warmth)) / 2);
-    const avg = (typeof knob === 'number' && isFinite(knob)) ? Math.max(0, Math.min(100, knob)) : byTrait;
+    const lvl = (typeof knob === 'number' && isFinite(knob)) ? Math.max(0, Math.min(100, knob)) : byTrait;
+    const dTalk = (tone && Number.isFinite(Number(tone.talkDelta))) ? Number(tone.talkDelta) : 0;
+    const avg = Math.max(0, Math.min(100, lvl + dTalk));
     let plan = avg < 35 ? { maxChunks: 2, maxChars: 30 }
       : avg < 52 ? { maxChunks: 2, maxChars: 38 }
         : avg < 72 ? { maxChunks: 3, maxChars: 48 }
           : { maxChunks: 4, maxChars: 60 };
     if (stageMin < 20) plan = { maxChunks: Math.min(plan.maxChunks, 2), maxChars: Math.min(plan.maxChars, 30) }; // 刚认识：收敛一点
-    if (tone && Number.isFinite(tone.chunks)) plan.maxChunks = Math.max(1, Math.min(5, Math.round(tone.chunks)));
-    if (tone && Number.isFinite(tone.maxChars)) plan.maxChars = Math.max(8, Math.min(120, Math.round(tone.maxChars)));
+    // 世界引擎的当天修饰已经在 avg 里合过，这里不再单独覆盖
     return plan;
   }
 
@@ -1205,15 +1649,15 @@ export class Soul {
 
     const rel = this.getRelation(peerKey, isOwner);
     const warm = /想你|爱你|喜欢|抱抱|晚安|心疼/.test(userText);
-    const rude = /滚|蠢|闭嘴|垃圾/.test(userText);
+    // 关键词只是「立刻有反应」的第一层（便宜、当场）；更准的一层在下面那次抽取调用里（同一调用，不额外花钱）
+    let rude = /滚|蠢|闭嘴|垃圾|废物|烦死|别烦我/.test(userText);
     // 演化计数器：只统计主人对她的互动（世界引擎每周结算时用）
     if (isOwner) this.bumpEvolution({ chats: 1, warm: warm ? 1 : 0, rude: rude ? 1 : 0 });
     const moodDelta = rude ? -6 : warm ? 4 : 0.5;
+    // 心情不再是"存起来再加"，而是"今天累计了多少互动"——由 moodNow() 统一算出来
+    this._addMoodDelta(moodDelta);
     // 第三次改版：亲密度不再累积（关系深浅改由世界引擎判断）
-    this._saveRelation(peerKey, {
-      mood: Math.max(0, Math.min(100, rel.mood + moodDelta)),
-      chats: (rel.chats || 0) + 1,
-    });
+    this._saveRelation(peerKey, { chats: (rel.chats || 0) + 1 });
 
     // 关系阶段跃迁检测（里程碑）
     if (isOwner) {
@@ -1236,7 +1680,7 @@ export class Soul {
       for (const h of herTexts) {
         const hs = String(h || '').trim();
         if (hs.length > 4 && hs.length <= 120 && SELF_RE.test(hs)) {
-          try { await this.addMemory({ who: 'self', text: hs.slice(0, 120), importance: 2, tags: ['自述'], source: 'self' }); } catch {}
+          try { await this.addMemory({ who: 'self', text: hs.slice(0, 120), cat: 'her', bucket: 'feel' }); } catch {}
         }
       }
     }
@@ -1264,7 +1708,7 @@ export class Soul {
         r = await chatCompletion({
           baseURL: c.baseURL, apiKey: c.apiKey, model: b.extractionModel,
           messages: [
-            { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数,"tags":["标签"],"todo":{"due":"YYYY-MM-DD","text":"待办内容"}或null}。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。**一律用中文写**（只有对方/她原话本身就是英文时才保留英文）。没有值得记的输出[]。' },
+            { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数}（importance 只用来筛"值不值得记"，入库不带这个字段）。除了记忆，还要额外判断**他这次有没有伤到她**（说重话、不耐烦、贬低、敷衍、拿她跟别人比、翻旧账都算）：输出对象 {"memories":[上面那些条目],"hurt":{"level":0或1或2,"why":"一句话说清是哪句或哪种语气"}}——level=0 没伤到（正常开玩笑、催她、忙起来话短都不算）；level=1 有点不舒服；level=2 明显被伤到（骂她、贬低她、拿她当出气筒）。不确定就填 0。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。**一律用中文写**（只有对方/她原话本身就是英文时才保留英文）。没有值得记的输出[]。' },
             { role: 'user', content: '【谁在说话】' + (isOwner ? '你在意的人' : '普通联系人') + ' ' + peerKey + '\n【对话】\n' + dialogue },
           ],
           temperature: 0.2, maxTokens: 400,
@@ -1272,17 +1716,40 @@ export class Soul {
         r = { content: r.content };
       } else {
         r = await this.router.chat([
-          { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数,"tags":["标签"],"todo":{"due":"YYYY-MM-DD","text":"待办内容"}或null}。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。**一律用中文写**（只有对方/她原话本身就是英文时才保留英文）。没有值得记的输出[]。' },
+          { role: 'system', content: '你是她（这个女生本人）的记事本。从微信对话里挑出值得她长期记住的事，并且用她自己的第一人称写下来——像她随手在备忘录里记的一条，而不是系统日志。只输出JSON数组，不要解释。写法规则：①关于对方的事用「他」或他的名字（绝对不要用「主人」「用户」「对方」这类报告词）②关于她自己的事用「我」③口语、短句（一般 8~25 字），可以带一点她自己的语气④只写事实，不写「谈话中提及」「用户表示」这类套话。正例：他不吃香菜 / 他下周三要出差去成都 / 我最喜欢下雨天 / 我下周想去趟杭州。反例：主人不吃香菜 / 用户表示下周出差 / 她喜欢雨天。每条格式：{"text":"一句话记忆（第一人称）","importance":1到5的整数}（importance 只用来筛"值不值得记"，入库不带这个字段）。除了记忆，还要额外判断**他这次有没有伤到她**（说重话、不耐烦、贬低、敷衍、拿她跟别人比、翻旧账都算）：输出对象 {"memories":[上面那些条目],"hurt":{"level":0或1或2,"why":"一句话说清是哪句或哪种语气"}}——level=0 没伤到（正常开玩笑、催她、忙起来话短都不算）；level=1 有点不舒服；level=2 明显被伤到（骂她、贬低她、拿她当出气筒）。不确定就填 0。日常寒暄不要记；约定、偏好、重要事件、对方提到的日程必须记。**一律用中文写**（只有对方/她原话本身就是英文时才保留英文）。没有值得记的输出[]。' },
           { role: 'user', content: '【谁在说话】' + (isOwner ? '你在意的人' : '普通联系人') + ' ' + peerKey + '\n【对话】\n' + dialogue },
         ], { temperature: 0.2, maxTokens: 400 });
       }
-      const m = String(r.content || '').match(/\[[\s\S]*\]/);
-      if (m) {
-        const arr = JSON.parse(m[0]);
-        for (const it of arr) {
-          if (!it || !it.text || (it.importance || 3) < 2) continue;
-          await this.addMemory({ who: peerKey, text: it.text, importance: it.importance, tags: it.tags || [], todo: it.todo || null });
-        }
+      const raw = String(r.content || '');
+      let arr = [];
+      let hurtLevel = 0;
+      let hurtWhy = '';
+      // 新契约是对象 {memories:[...], hurt:{level,why}}；也兼容模型只吐数组的老样式
+      const objM = raw.match(/\{[\s\S]*\}/);
+      if (objM) {
+        try {
+          const o = JSON.parse(objM[0]);
+          if (Array.isArray(o.memories)) arr = o.memories;
+          if (o.hurt && typeof o.hurt.level !== 'undefined') {
+            hurtLevel = Math.max(0, Math.min(2, Number(o.hurt.level) || 0));
+            hurtWhy = String(o.hurt.why || '').slice(0, 60);
+          }
+        } catch { /* 落到下面的数组解析 */ }
+      }
+      if (!arr.length) {
+        const m = raw.match(/\[[\s\S]*\]/);
+        if (m) { try { arr = JSON.parse(m[0]); } catch { arr = []; } }
+      }
+      for (const it of (Array.isArray(arr) ? arr : [])) {
+        if (!it || !it.text || (it.importance || 3) < 2) continue;
+        // importance 只在上面那行当一次性闸门用，入库不再带它（tags/todo 已删）
+        await this.addMemory({ who: peerKey, text: it.text, cat: 'you' });
+      }
+      // 伤害判定并入**现有压力机**（批 E2 / A13）：这里只产出判定，压力仍由 deform 那台机器加
+      if (hurtLevel >= 1) {
+        rude = true;
+        this._lastHurt = { level: hurtLevel, why: hurtWhy, at: Date.now() };
+        this.log('[soul] 他这句话伤到她了（程度 ' + hurtLevel + '）：' + hurtWhy);
       }
     } catch (err) {
       this.log('[soul] 记忆抽取失败(不影响回复): ' + (err && err.message));
@@ -1292,7 +1759,7 @@ export class Soul {
     if (this.embed) {
       try { void this.embed.sweep(this.getMemories().entries.slice(-10)); } catch {}
     }
-    return { rude, warm };
+    return { rude, warm, hurtLevel: (this._lastHurt && this._lastHurt.level) || 0, hurtWhy: (this._lastHurt && this._lastHurt.why) || '' };
   }
 
   /** 主动消息：kind = morning（早安）| night（晚安）| poke（日常分享）| nudge（等急了） */
@@ -1301,7 +1768,14 @@ export class Soul {
     const persona = this.getPersona();
     const peerKey = extra.peerKey || 'owner';
     const rel = this.getRelation(peerKey, true);
-    const memories = await this._retrieveHybrid(extra.seed || '', peerKey);
+    // 空 query 会被引擎直接拒掉（cannot be empty or whitespace-only），然后静默降级成本地 JSON——
+    // 实测四种主动消息（早安/晚安/分享/催你）全都命中这条路。这里兜一个一定有内容的种子。
+    const seedRaw = String(extra.seed || '').trim()
+      || String((extra.flowItem && extra.flowItem.text) || '').trim()
+      || String((extra.today && extra.today.focus) || '').trim()
+      || String((extra.world && extra.world.tone && extra.world.tone.statusLine) || '').trim()
+      || (kind === 'morning' ? '早上好，刚起床' : kind === 'night' ? '晚安，准备睡了' : kind === 'nudge' ? '他还没回我' : '今天想跟他说的事');
+    const memories = await this._retrieveHybrid(seedRaw, peerKey);
     const now = new Date();
     const b = this._behavior();
     // 关键修复：主动消息以前**没有**传 today/world → 她不知道现在几点、也不知道今天的分寸，
@@ -1312,13 +1786,16 @@ export class Soul {
     const tasks = {
       morning: '你刚醒来不久（现在是【此刻】里的时间）。给对面发一条早安消息：1~2 句话，按你和 TA 的关系分寸来——刚认识就客气简短，熟了才随意。',
       night: '你现在准备睡了（时间是【此刻】里的晚上/深夜，不是白天）。发一条晚安消息：1~2 句话，同样按关系分寸来；刚认识就简单说一句，不要亲昵称呼、不要撒娇。',
-      poke: String(extra.flowItem && extra.flowItem.text)
+      // 注意：这里不能用 String(extra.flowItem && extra.flowItem.text) 当条件——
+      // 没有 flowItem 时它得到的是字符串 undefined（真值），于是走进「有流水」分支再崩（真 bug，测试抓到）。
+      poke: (extra.flowItem && extra.flowItem.text)
         // 2026-09-13 改：以前这里是"编一个真实可信的小细节"——"编"就是荒唐内容的直接来源
         // （编出"翻卷宗翻到一段摄像头对着人拍"）。现在只允许说**她今天真实经历过的这件事**。
         ? ('你刚做完这件事：' + String(extra.flowItem.text).slice(0, 120) + '（' + String(extra.flowItem.time || '') + '）。'
           + '就着这件事，像随手发微信那样跟他说 1~2 句话，可以带一点你当时的感受或吐槽。'
           + '**只能基于这件事**：不许新增时间、地点、数字、别人的话；想不出怎么说就发一句很短的（比如"刚忙完"）。')
         : '你刚好空下来，随口跟他说一句话：1~2 句话，像随手发微信。想不出具体的事就发一句很短的日常（比如"今天好热"），**绝不许编造具体的时间/地点/数字/别人的话**。',
+      promise: '你之前答应过他一件事：' + String((extra.promise && extra.promise.text) || '') + '（' + ((extra.promise && extra.promise.createdAt) ? new Date(extra.promise.createdAt).toLocaleDateString('zh-CN') : '前几天') + '答应的，说好的日子是 ' + String((extra.promise && extra.promise.due) || '') + '）。' + '现在到了该提起或兑现的时候。像突然想起来那样自然地说，1~2 句话。' + ((extra.promise && extra.promise.kind === 'remind') ? '这是你答应提醒他的事，口气像「诶，你别忘了…」。' : '这是你答应要给他的、或你要做的事，口气像「说好的，我来了」。') + '如果日子已经拖过去了，先小小认个错再补上。**绝不提系统、队列、记录、提醒事项这类词**。',
       nudge: '对面已经有一阵子没回你消息了。按你的性格和关系分寸发一条：关系浅就只是轻轻提一句，关系深才可以撒娇或小吐槽。1句话，不咄咄逼人。',
     };
     // 主动消息以前**完全不带聊天记录** → 模型丢了上下文，催人时直接自我介绍了
@@ -1332,8 +1809,41 @@ export class Soul {
       { role: 'user', content: '（系统指令：现在轮到你主动发一条微信。直接输出内容本身，不要任何解释、不要加引号。）' },
     ];
     const p = (this.router.cfg && this.router.cfg.params) || {};
-    const r = await this.router.chat(messages, { maxTokens: 200, temperature: Math.min(0.8, (p.temperature == null ? 0.8 : Number(p.temperature))) });
-    const chunks = this._planChunks(cleanReply(r.content), persona, b.chunkMax);
-    return { chunks, delaysMs: this._planDelays(chunks, true, b.replySpeed), backend: r.backend };
+    const temp = Math.min(0.8, (p.temperature == null ? 0.8 : Number(p.temperature)));
+    const r = await this.router.chat(messages, { maxTokens: 200, temperature: temp });
+    const parsedP = parseCommands(cleanReply(r.content));
+    let chunks = this._planChunks(parsedP.text, persona, b.chunkMax);
+
+    // ── 复读止血（批 E1 / A9）──
+    // 她说过的主动消息不该反复说同一件事（实测最刺眼的就是"翻来覆去同一件大理民宿"）。
+    // 先比字面（免费），再过一道便宜模型的"是不是同一件事"；重复就换一件事说，只重试一次。
+    const recent = Array.isArray(extra.recentSaid) ? extra.recentSaid : [];
+    if (recent.length && chunks.length) {
+      const guard = b.repeatGuard || 'literal+intent';
+      let dup = false;
+      if (guard !== 'off') {
+        dup = this._repeatLiteral(chunks.join(' '), recent);
+        if (!dup && guard === 'literal+intent') dup = await this._repeatIntent(chunks.join(' '), recent, extra.chain);
+      }
+      if (dup) {
+        const said = recent.slice(-6).map((x) => '· ' + String((x && x.text) || '').slice(0, 40)).join(String.fromCharCode(10));
+        const messages2 = messages.map((m2, i) => (i === 0
+          ? { role: 'system', content: m2.content + String.fromCharCode(10)
+              + '【你最近已经跟他说过这些，这次必须换一件事、或换一个完全不同的角度，不许重复】' + String.fromCharCode(10) + said }
+          : m2));
+        try {
+          const r2 = await this.router.chat(messages2, { maxTokens: 200, temperature: Math.min(0.9, temp + 0.15) });
+          const c2 = this._planChunks(cleanReply(r2.content), persona, b.chunkMax);
+          let dup2 = false;
+          if (guard !== 'off') {
+            dup2 = this._repeatLiteral(c2.join(' '), recent);
+            if (!dup2 && guard === 'literal+intent') dup2 = await this._repeatIntent(c2.join(' '), recent, extra.chain);
+          }
+          if (c2.length && !dup2) chunks = c2;
+          else return { chunks: [], skipped: 'repeat', text: '', backend: r.backend };
+        } catch { return { chunks: [], skipped: 'repeat', text: '', backend: r.backend }; }
+      }
+    }
+    return { chunks, delaysMs: this._planDelays(chunks, true, b.speedMul || 1), backend: r.backend, commands: parsedP.commands || [] };
   }
 }

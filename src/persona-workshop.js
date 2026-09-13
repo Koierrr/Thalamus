@@ -82,7 +82,7 @@ export class PersonaWorkshop {
       ' "assessments":{"mbti":"4字母，依据资料推断"},',
       ' "styleExamples":[{"user":"对方原话","her":"她的原话"}]最多6条,',
       ' "memorySeeds":[{"text":"值得她记住的事","importance":1-5,"tags":["标签"]}]最多10条,',
-      ' "behavior":{"behavior":{"replySpeed":"instant或human或slow","chunkMax":1-8},"life":{"pokesPerDay":0-50,"wake":"HH:MM","sleep":"HH:MM"}}}',
+      ' "behavior":{"behavior":{"speedMul":0.5到2.5的倍数,"talkiness":0-100,"chunkMax":1-8},"life":{"pokesPerDay":0-50,"wake":"HH:MM","sleep":"HH:MM"}}}',
       ' "appearanceText":"一段自然语言的外貌描述（长相/发型发色/穿衣/身材/气质揉成一段，80~150字）",',
       ' "npc":[{"name":"虚构朋友/同事名","desc":"一句话人设"}]0-3个,"secrets":[{"text":"她还没告诉用户的私人事件"}]0-2条,',
       ' "longterm":[{"text":"长线目标（如学插画/存钱）","progress":0-100}]0-3条,',
@@ -223,7 +223,7 @@ export class PersonaWorkshop {
     let seeds = 0;
     for (const seed of draft.memorySeeds || []) {
       if (seed && seed.text) {
-        try { await this.soul.addMemory({ who: '', text: seed.text, importance: seed.importance || 3, tags: seed.tags || [] }); seeds += 1; } catch {}
+        try { await this.soul.addMemory({ who: '', text: seed.text, cat: 'you', bucket: 'permanent' }); seeds += 1; } catch {}
       }
     }
     this.log('[workshop] 人格草稿已应用: ' + persona.name + '，记忆种子 ' + seeds + ' 条');

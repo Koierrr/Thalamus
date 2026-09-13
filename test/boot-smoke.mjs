@@ -4,6 +4,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+// 部署副本里没有宿主平台包（@deepseek-ai/* 由 DSH 运行时提供，插件只带 4 个 vendored 依赖），
+// 所以这个用例在部署副本里天然跑不了 —— 明确跳过并说明原因，别让人误以为"交付物有缺陷"。
+try {
+  createRequire(import.meta.url).resolve('@deepseek-ai/dsh-agent/package.json');
+} catch {
+  console.log('BOOT-SMOKE 跳过：当前目录没有宿主平台包（@deepseek-ai/*）——这是部署副本的正常状态，');
+  console.log('            插件运行时由 DSH 宿主提供这些包；要跑这个用例请在源码工作区里跑。');
+  process.exit(0);
+}
 
 // 隔离的家目录（不碰真实 ~/.dsh）
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-boot-'));
@@ -145,8 +156,8 @@ r = await call('POST', '/wechat-companion/panel/memory', { op: 'add', text: '主
 ok(r.json.entries && r.json.entries.length === 1 && r.json.engine === 'local', '记忆添加（本地JSON兜底）');
 r = await call('GET', '/wechat-companion/panel/memory');
 ok(r.json.entries[0].text === '主人不吃香菜', '记忆读取');
-r = await call('POST', '/wechat-companion/panel/memory', { op: 'pin', id: r.json.entries[0].id });
-ok(r.json.entries[0].pinned === true, '记忆钉住');
+r = await call('POST', '/wechat-companion/panel/memory', { op: 'bucket', id: r.json.entries[0].id, bucket: 'permanent' });
+ok(r.json.entries[0].bucket === 'permanent' && r.json.entries[0].bucketLabel === '固化', '记忆固化（桶=permanent）');
 r = await call('POST', '/wechat-companion/panel/memory', { op: 'delete', id: r.json.entries[0].id });
 ok(r.json.entries.length === 0, '记忆删除（让她忘掉）');
 

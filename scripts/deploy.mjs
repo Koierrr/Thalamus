@@ -18,7 +18,9 @@ function copyDir(from, to) {
 }
 
 // 1) 同步代码（不带本地测试桩 node_modules，只带运行必需的三个 vendored 依赖）
-for (const item of ['src', 'client', 'python', 'package.json', 'cordis.patch.yml', 'README.md', 'NOTICE.md']) {
+// test 与 docs 也一起同步：部署副本要能自己跑回归与真渲染自查（以前不同步 test，
+// 结果副本里的 test/ 是很久以前的旧货，连 run-all.mjs 都没有，复核时直接 MODULE_NOT_FOUND）。
+for (const item of ['src', 'client', 'python', 'test', 'docs', 'scripts', 'package.json', 'cordis.patch.yml', 'README.md', 'NOTICE.md']) {
   const s = path.join(src, item);
   const d = path.join(dst, item);
   fs.mkdirSync(path.dirname(d), { recursive: true });

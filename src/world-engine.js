@@ -11,6 +11,7 @@ import { chatCompletion } from './model-router.js';
 import { JOB_TYPE_IDS, guessJobType } from './job.js';
 import { applyInterestChanges, changeTendency, INTEREST_MIN, PHRASE_MIN } from './interest.js';
 import { derivedTraits } from './soul.js';
+import { ensureState, periodFor } from './body-state.js';
 
 function dayKey(now) {
   const y = now.getFullYear(); const m = String(now.getMonth() + 1).padStart(2, '0'); const d = String(now.getDate()).padStart(2, '0');
@@ -43,6 +44,7 @@ function worldMarkdown(o) {
   L.push('- 痴迷的事：' + (o.focus || '—'));
   L.push('- 作息：' + (o.wake || '?') + ' 起 · ' + (o.sleep || '?') + ' 睡');
   L.push('- 工作负荷：' + (o.workload == null ? '—' : o.workload + ' / 100'));
+  if (o.body) L.push('- 身体：' + (o.body.sleep || '—') + (o.body.ailment && o.body.ailment !== '没有' ? ' · ' + o.body.ailment : ''));
   if (o.milestone) L.push('- 🎉 纪念日：' + o.milestone);
   const j = o.job || {};
   if (j.type && j.type !== 'none') L.push('- 她怎么上班：' + j.type + (j.workStart ? '（' + j.workStart + '–' + j.workEnd + '）' : '') + (j.reason ? ' —— ' + j.reason : ''));
@@ -225,16 +227,50 @@ export class WorldEngine {
   }
 
   /** 她睡了才转（today.sleep 之后，或凌晨4点前补转）；同一天只转一次；失败后30分钟内不重试 */
+  /**
+   * 这次生成该写「哪一天」的剧本——**唯一**的时间判定处（原来这个判断散在 shouldGenerate 与 generate 两处，
+   * 而且用的是"是否凌晨 4 点前"，于是早上 7 点补跑会被当成"夜里写明天"：当天已有的剧本被覆盖、
+   * 她一整天只能退回默认分寸。实测踩到过）。
+   *
+   * 规则：
+   *   ① 这一天还没有剧本 → 补这一天（无论现在几点；她还在过这一天，就该有这一天的剧本）
+   *   ② 这一天已有剧本、且还没到她的起床时间 → 仍然算这一天（shouldGenerate 会因为它已存在而跳过）
+   *   ③ 其余 → 写明天
+   */
+  planForDate(now, todaySchedule) {
+    const s = this._read() || {};
+    const key = dayKey(now);
+    const toMin = (v) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v == null ? '' : v)); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const wakeMin = toMin(todaySchedule && todaySchedule.wake);
+    const sleepMin = toMin(todaySchedule && todaySchedule.sleep);
+    // "已经过了她今天该睡的时间"：只对"当天入睡"（睡觉晚于起床，例如 23:30 睡 / 09:30 起）成立；
+    // 睡觉时间在凌晨（例如 01:10 睡）说明她这一天的睡点在次日，白天任何时候都不算过点。
+    // 已经过了她今天该睡的时间 = 睡点是当天（晚于起床；没给起床时间就按晚于 12:00 判）且现在已过那个点。
+    // 睡点落在凌晨（例如 01:10）说明她这一天的睡点在次日，白天任何时候都不算过点。
+    const sameDaySleep = (sleepMin != null) && (wakeMin != null ? sleepMin > wakeMin : sleepMin >= 720);
+    const pastBedtime = sameDaySleep && nowMin >= sleepMin;
+    const nextKey = dayKey(new Date(now.getTime() + 86400000));
+    if (!pastBedtime) {
+      // 她今天还有剧本要用（还没睡下）→ 先别写任何东西，否则会把今天正在生效的剧本冲掉。
+      // 这一条正是"早上 7 点补跑把当天剧本覆盖掉"的直接修复。
+      if (s.forDate === key) return { forDate: key, why: '今天的剧本还在用，先不写' };
+      // 明天已经写好了 → 不为了补一个快过完的今天把它冲掉。
+      if (s.forDate === nextKey) return { forDate: s.forDate, why: '明天已经写好了，不冲掉它' };
+      return { forDate: key, why: '这一天还没有剧本，补这一天' };
+    }
+    if (s.forDate !== nextKey) return { forDate: nextKey, why: '她今天睡下了，写明天' };
+    return { forDate: s.forDate, why: '今天和明天都已有剧本，跳过' };
+  }
+
   shouldGenerate(now, todaySchedule) {
     if (!this._dedicatedReady()) return false;
     if (Date.now() - this._lastFail < 30 * 60 * 1000) return false;
     const s = this._read();
-    const key = dayKey(now);
-    if (s.date === key) return false;
-    const cur = now.getHours() * 60 + now.getMinutes();
-    const p = String((todaySchedule && todaySchedule.sleep) || '23:30').split(':');
-    const sl = Number(p[0]) * 60 + Number(p[1] || 0);
-    return cur >= sl || cur <= 240;
+    const plan = this.planForDate(now, todaySchedule);
+    // 按「该写的那一天」判，而不是按自然日：该写的那天已经有剧本就不跑，
+    // 没剧本就补（哪怕现在是白天）——这样才不会出现"她一整天没有剧本"。
+    return s.forDate !== plan.forDate;
   }
 
   /** 睡眠窗口调用：生成日记/明天作息/流水/念头/秘密/NPC/画像。必须有独立API，绝不共用对话接口。 */
@@ -257,10 +293,11 @@ export class WorldEngine {
     const T = persona.traits || {};
     const prof = persona.profile || {};
     const memText = (memories || []).slice(0, 12).map((m2) => '- ' + (m2.text || '')).join('\n');
-    // 时间框架：深夜0-4点的生成属于"刚到来的这一天"的剧本；晚间的生成属于明天
-    const isSmallHours = now.getHours() < 4;
-    const forDateObj = isSmallHours ? now : new Date(now.getTime() + 86400000);
-    const forDate = dayKey(forDateObj);
+    // 时间框架：由 planForDate 统一判定（补当天 / 写明天），这里不再各算一套
+    const plan = this.planForDate(now, today);
+    const forDateObj = new Date(plan.forDate + 'T12:00:00');
+    const forDate = plan.forDate;
+    const isSmallHours = forDate === dayKey(now);   // 写的是"今天"就当小时段处理（天气/措辞按当天）
     const wkCN = ['日', '一', '二', '三', '四', '五', '六'];
     const forWeekend = [0, 6].includes(forDateObj.getDay());
     const PB = persona.behavior || {};
@@ -273,6 +310,7 @@ export class WorldEngine {
 
     // 真实天气（凌晨生成 idx=0=今天；晚间生成 idx=1=明天）。开关关了或拿不到 → 由剧本编一个。
     const weather = (((this.cfgGet() || {}).world || {}).weatherReal !== false) ? await this._weather(persona, isSmallHours ? 0 : 1) : null;
+    this.log('[world] 本次写的是 ' + forDate + '（' + plan.why + '）');
 
     // 虚拟社交圈：稳定编制（持久保存，按名字去重合并，不凭空换人；兼容旧版字符串格式）
     const normNpc = (x) => {
@@ -330,14 +368,36 @@ export class WorldEngine {
       if (!r0 && Object.keys(rels || {}).length) r0 = rels[Object.keys(rels)[0]];
       if (r0) {
         const days = r0.firstSeen ? Math.max(0, Math.round((Date.now() - r0.firstSeen) / 86400000)) : 0;
-        relLine = '【你们的关系现状】亲密度 ' + Math.round(r0.affection || 0) + '/100；认识 ' + days + ' 天；聊过 ' + (r0.chats || 0) + ' 次；他最近的情绪 ' + Math.round(r0.mood || 0) + '/100。';
+        relLine = '【你们的关系现状】认识 ' + days + ' 天；聊过 ' + (r0.chats || 0) + ' 次；他最近的情绪 ' + Math.round(r0.mood || 0) + '/100。'
+          + '（给你一个参考：这些相处事实折算出的好感程度大约 ' + Math.round(r0.affection || 0) + '/100。但**她怎么表现由她的性格决定**——温度高、依恋高才把喜欢露在外面；锐利、秩序感高的人心里喜欢也照样嘴硬。别把好感当成一个可以调的旋钮，也别让它压过性格。）';
       } else {
         relLine = '【你们的关系现状】还没有正式的关系记录（等价于刚认识，亲密度 0）：她不该热络。';
       }
     } catch { relLine = ''; }
+    // 她的身体（批 E3 / A10）：世界引擎是日常身体的**唯一写入者**；生理期由纯代码算
+    const bodyInput = (() => {
+      try {
+        const st0 = this._read() || {};
+        const stB = ensureState(this.dir, String(persona.name || '') + String(((persona.traits || {}).socialBattery) || ''));
+        const pf = periodFor(stB, forDate);
+        const periodLine = (pf && pf.phase !== 'mid')
+          ? ('【她的生理期】' + forDate + '是她周期第 ' + pf.cycleDay + ' 天（' + (pf.phase === 'menstrual' ? '经期' : '经前期') + '），常见感受：' + (pf.note || '') + '。'
+            + '明天的流水与剧情必须和这个自洽：经期不安排剧烈运动、通宵、重要面试；她这几天话可以少一点（talkDelta 给负数）。')
+          : '';
+        const hist = Array.isArray(st0.bodyHistory) ? st0.bodyHistory.slice(-7) : [];
+        const txt = hist.map((h) => (h && h.forDate) ? (h.forDate + '：' + (h.sleep || '') + (h.ailment && h.ailment !== '没有' ? ' · ' + h.ailment : '')) : '').filter(Boolean).join('；');
+        const historyLine = txt
+          ? ('【她最近一周的身体】' + txt + '。规则：昨晚胃不舒服，今天最多是「还在」或「好转」，不许当成没发生过；没有新情况就把 ailment 填「没有」；'
+            + '同一个小毛病别三天两头犯了又好，反复出现就写成「老毛病」。sleep 要和今晚的日记、作息自洽（熬夜赶稿 → 没睡好）。')
+          : '';
+        return { periodLine, historyLine };
+      } catch { return { periodLine: '', historyLine: '' }; }
+    })();
     const jobLines = (jobOn && persona.job && jType !== 'none')
       ? [
         '【她的职业】' + persona.job + '（' + (JOB_LABEL[jType] || jType) + '）' + (jobCfg.workStart && jobCfg.workEnd ? '，作息大致 ' + jobCfg.workStart + '-' + jobCfg.workEnd : '') + '；工作影响强度约 ' + Math.round(jIntensity * 100) + '%。',
+        (bodyInput.periodLine || ''),
+        (bodyInput.historyLine || ''),
         '【明天是不是工作日】' + (jWorkday ? '是' : '不是') + '。' + (jWorkday ? '流水里必须有一件与工作有关的具体事（赶稿/开会/客户改需求/同事八卦/通宵加班…），并且这次要给出 workload（0-100 的工作负荷）。' : '不要编工作场景，让她过自己的日子。'),
         npcWant ? '【社交圈里的工作关系】她的社交圈里至少要有 ' + npcWant + ' 位工作关系的人（同事/客户/领导/同学），这些人真实存在于她的生活里。' : '',
       ].filter(Boolean).join('\n')
@@ -366,19 +426,20 @@ export class WorldEngine {
       (evolveDue ? ',"evolve":{"warmth":1,"attachment":1,"reason":"第一人称一句话说明为什么变（六维键：socialBattery/warmth/attachment/sharpness/initiative/orderliness，值-2~+2，可以只给部分键）"' : '') +
       (evolveDue ? ',"interestsAdd":"","interestDrop":"","phraseAdd":"","phraseDrop":"","interestsReason":""' : '') +
       ',"disclosedAdd":[{"layer":"表层|中层|深层","topic":"今晚她新告诉他的一个过去细节（如：老家在苏州）"}]0-2条，没有就空数组' +
-      ',"tone":{"intimacy":今天她该表现的熟度0-100,"address":"明天她该怎么称呼他（例如：用名字/叫哎/叫XX）","style":"明天的语气要点，一句话","proactive":{"morning":明天要不要主动说早安true/false,"night":要不要说晚安true/false,"pokes":明天最多主动几次0-5,"nudges":催他几次0-5},"chunks":明天她一条回复最多几条消息1-4（话少的人给1）,"maxChars":每条最多几个字8-80（话少的人给15左右）,"forbid":["明天绝对不要做的事，2-4条"],"reason":"一句理由（为什么是这个分寸）"}' +
+      ',"tone":{"intimacy":今天她该表现的熟度0-100,"address":"明天她该怎么称呼他（例如：用名字/叫哎/叫XX）","style":"明天的语气要点，一句话","proactive":{"morning":明天要不要主动说早安true/false,"night":要不要说晚安true/false,"pokes":明天最多主动几次0-5,"nudges":催他几次0-5},"talkDelta":明天她比平时话多还是话少（-30~+30；正数=比平时话多，负数=比平时话少，跟她的性格比）,"forbid":["明天绝对不要做的事，2-4条"],"reason":"一句理由（为什么是这个分寸）"}' +
       ',"statusLine":"她今天状态的一句话（第一人称、口语，例如：今天案子卡住了，有点闷）"' +
       ',"past":{"surface":"她的表层过去（职业/城市/日常喜好，随时可聊）","middle":"她的中层过去（老家/父母大概/读书/换过什么工作，熟人~朋友被问到才零星说）","deep":"她的深层过去（创伤/心结/真正的梦想，亲近以上+气氛对了才说）"}' +
       ',"insomnia":今晚她是不是失眠到很晚true/false' +
       ',"proactiveAt":"明天她大概什么时候会想找他（例如 16:00 前后 / 通勤路上 / 睡前；不想找就给空字符串）"' +
       ',"rhythm":{"baseWake":"她平时的起床HH:MM","baseSleep":"她平时的睡觉HH:MM","weekendShiftMin":周末推迟分钟0-180,"nightOwlProb":夜猫子概率0-1,"allNighterProb":通宵概率0-1}' +
       ',"workload":今天的工作负荷0-100（不是工作日填0）' +
+      ',"body":{"sleep":"没睡好或睡得不错或熬了夜或一般","ailment":"身体的小毛病一句话（例如：胃有点不舒服/嗓子有点哑/没有）","note":"一句话补充（例如：想吃清淡的/想早点睡），没有就空"}' +
       (jobOn && persona.job ? ',"job":{"type":"office|shift|freelance|night|student|none","workStart":"HH:MM","workEnd":"HH:MM","workDays":"1,2,3,4,5","reason":"你判断她明天怎么上班的一句理由"}' : '') +
       '}',
       '【她的过去（2026-09-13 决定）】**完全由你负责生成与推进，后台不再由用户手写**。'
       + (pastMissing ? '她现在**还没有过去**：这一晚请为她想出完整的三层过去（surface/middle/deep），与她的职业/城市/年龄/性格/MBTI 严格自洽，像真人的往事（例：老家在哪、父母做什么、换过什么工作、有什么心结、真正想做的事）。每层 40~120 字，写成事实、不要写成小说。' : '她已经有过去（见上）：**这一晚最多再补一条**很短的具体细节（或把某一层写得更具体一点），能自洽就别硬加；没得补就把三层原样返回。')
       + '绝对不许和【已经告诉过他的】矛盾，也不许把她已经说过的事写成"从没说过"。'
-      + '规则：**话量必须跟她的性格一致**（性格六维里温度/发起力低的人惜字如金：chunks=1、maxChars≈15，别让她变成话痨）；**分寸必须与【你们的关系现状】严格匹配**——亲密度低（比如 0~20）时她就该客气、有边界感，不能撒娇、不能叫昵称、不能要求对方为她做事、不能深夜发消息；亲密度越高才可以越随意越亲昵。宁可冷淡也别越界。；一切与她的性格/职业/兴趣/城市自洽；wake/sleep 必须在【作息基准】允许的范围内，且要和流水剧情对得上（如果今晚日记里是熬夜赶稿，明天就明显晚起）；流水要像真实生活（有琐碎有起伏）' + (weather ? '，且与真实天气自洽' : '') + '；秘密是她的私人边界，只在合适时机被提起；绝不提AI/模型/生成。',
+      + '规则：**话量必须跟她的性格一致**（性格六维里温度/发起力低的人惜字如金，talkDelta 给负数；别让她变成话痨）；**分寸必须与【你们的关系现状】严格匹配**——亲密度低（比如 0~20）时她就该客气、有边界感，不能撒娇、不能叫昵称、不能要求对方为她做事、不能深夜发消息；亲密度越高才可以越随意越亲昵。宁可冷淡也别越界。；一切与她的性格/职业/兴趣/城市自洽；wake/sleep 必须在【作息基准】允许的范围内，且要和流水剧情对得上（如果今晚日记里是熬夜赶稿，明天就明显晚起）；流水要像真实生活（有琐碎有起伏）' + (weather ? '，且与真实天气自洽' : '') + '；秘密是她的私人边界，只在合适时机被提起；绝不提AI/模型/生成。',
     ];
     if (evolveDue) {
       sys.push('【性格周结算（满7天一次，这次要做）】她和你生活的这一周：被哄了' + (evo.warm || 0) + '次、被怼了' + (evo.rude || 0) + '次、聊了' + (evo.chats || 0) + '轮。请给六维微调：每个键 -2~+2（可以不变），全维度变动合计绝对值≤5，方向要与这些互动的因果相符（常被哄→温度/依恋缓涨；常被冷落怼→锐度涨依恋跌；总她在主动→发起力涨）。铁律：只能微调"表达层"，绝不能违背她的MBTI认知类型（如 Fi 主导的人再暖也是安静深沉的暖，不会变成 Fe 式外放热情）；拿不准就少动或不动。');
@@ -419,9 +480,24 @@ export class WorldEngine {
 
     // 兴趣/口头禅变化历史（先声明，out 里要用）
     let interestLog = Array.isArray(state.interestLog) ? state.interestLog.slice(-40) : [];
+    const prevBodyHist = Array.isArray(state.bodyHistory) ? state.bodyHistory.slice(-6) : [];
+    // 日期以引擎自己的 forDate 为准，**不采信模型输出的日期**
+    const bodyOut = (() => {
+      const bdy = (d && d.body) || {};
+      const sleepOk = ['没睡好', '睡得不错', '熬了夜', '一般'];
+      return {
+        forDate,
+        sleep: sleepOk.includes(String(bdy.sleep || '')) ? String(bdy.sleep) : '一般',
+        ailment: String(bdy.ailment || '没有').trim().slice(0, 16) || '没有',
+        note: String(bdy.note || '').slice(0, 40),
+      };
+    })();
     const out = {
       date: dayKey(now),
       forDate,
+      // 她的日常身体（批 E3 / A10）：世界引擎是**唯一写入者**；日期以引擎自己的 forDate 为准
+      body: bodyOut,
+      bodyHistory: [...prevBodyHist, bodyOut].slice(-7),
       diary: String(d.diary || '').slice(0, 800),
       wake: hm(d.wake) || '',
       sleep: hm(d.sleep) || '',
@@ -459,7 +535,7 @@ export class WorldEngine {
           intimacy: clamp(t.intimacy, 0, 100, 10),
           address: String(t.address || '').slice(0, 30),
           style: String(t.style || '').slice(0, 120),
-          chunks: (typeof t.chunks === 'number' && isFinite(t.chunks)) ? Math.max(1, Math.min(4, Math.round(t.chunks))) : undefined,
+          talkDelta: (typeof t.talkDelta === 'number' && isFinite(t.talkDelta)) ? Math.max(-30, Math.min(30, Math.round(t.talkDelta))) : undefined,
           proactive: (t.proactive && typeof t.proactive === 'object') ? {
             morning: t.proactive.morning !== false,
             night: t.proactive.night !== false,
@@ -476,7 +552,6 @@ export class WorldEngine {
             nightOwlProb: (() => { const v = Number(d.rhythm.nightOwlProb); return isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.15; })(),
             allNighterProb: (() => { const v = Number(d.rhythm.allNighterProb); return isFinite(v) ? Math.max(0, Math.min(1, v)) : 0.03; })(),
           } : undefined,
-          maxChars: (typeof t.maxChars === 'number' && isFinite(t.maxChars)) ? Math.max(8, Math.min(80, Math.round(t.maxChars))) : undefined,
           forbid: Array.isArray(t.forbid) ? t.forbid.map((x) => String(x).slice(0, 20)).filter(Boolean).slice(0, 5) : [],
           reason: String(t.reason || '').slice(0, 80),
           source: 'world',
@@ -519,7 +594,7 @@ export class WorldEngine {
         this.soul.savePersona({ traits: next });
         const reason = String(d.evolve.reason || '').slice(0, 100);
         if (reason && this.soul.addMemory) {
-          try { await this.soul.addMemory({ who: 'self', text: '（成长）' + reason, importance: 3, tags: ['成长'], source: 'life' }); } catch {}
+          try { await this.soul.addMemory({ who: 'self', text: '（成长）' + reason, cat: 'her', bucket: 'feel' }); } catch {}
         }
         this.log('[world] 性格周结算完成：' + applied + ' 维微调' + (reason ? '（' + reason + '）' : ''));
       }
@@ -579,7 +654,7 @@ export class WorldEngine {
     // 生活流水入她的记忆（source: life），供日后自然聊起
     if (this.soul) {
       for (const f of out.flow) {
-        try { await this.soul.addMemory({ who: 'self', text: '（生活）' + f.text, importance: 2, tags: ['生活'], source: 'life' }); } catch {}
+        try { await this.soul.addMemory({ who: 'self', text: '（生活）' + f.text, cat: 'world', bucket: 'dynamic' }); } catch {}
       }
     }
     this.log('[world] 世界已生成：日记+明天作息 ' + (out.wake || '?') + '-' + (out.sleep || '?') + ' +流水' + out.flow.length + '件+秘密' + out.secrets.length + '条+画像' + (out.portrait ? '✓' : '✗'));

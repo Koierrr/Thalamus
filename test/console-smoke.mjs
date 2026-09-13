@@ -134,7 +134,7 @@ for (const tab of hooks.TABS) {
     await new Promise((r) => setTimeout(r, 30));
     const main = byId['main'];
     const htmlLen = JSON.stringify(main.children.map((c) => c.tagName)).length;
-    ok(true, '页签「' + tab.name + '」渲染无异常（节点 ' + main.children.length + ' 个）');
+    ok(main.children.length > 0, '页签「' + tab.name + '」渲染无异常（节点 ' + main.children.length + ' 个）');
     ok(alertLog.length === 0, '页签「' + tab.name + '」无 alert 报错' + (alertLog.length ? '：' + alertLog[0] : ''));
   } catch (e) {
     ok(false, '页签「' + tab.name + '」渲染抛错: ' + e.message);
@@ -143,7 +143,7 @@ for (const tab of hooks.TABS) {
 
 // ---------- 分区结构断言（每个已铺开的页签） ----------
 // 世界页 7 → 6：2026-09-13 用户定稿删掉「她眼中的你」那一栏（画像只在日记存档里看）
-const EXPECT = { home: 4, persona: 7, world: 6, relation: 3, memory: 4, brain: 3, nwa: 5, ops: 4 };
+const EXPECT = { home: 4, persona: 7, world: 7, relation: 4, memory: 4, brain: 3, nwa: 5, ops: 4 };
 for (const tabId of Object.keys(EXPECT)) {
   fetchLog.length = 0; alertLog.length = 0;
   hooks.go(tabId);
@@ -196,7 +196,9 @@ for (const tabId of Object.keys(EXPECT)) {
     }
   };
   walk3(byId['main'], 'main');
-  const bad = nodes.filter((e) => /加载失败|读取失败|加载中/.test(e._text || '')).map((e) => (e._text || '').slice(0, 24) + '[在 ' + e.__path + ']');
+  // 注意：mut() 现在用 innerHTML 渲染（会把 **加粗** 与换行转成 HTML），所以取文要用 textContent 而不是 _text，
+  // 否则这些守卫会悄悄失效（内容都在 _html 里）。
+  const bad = nodes.filter((e) => /加载失败|读取失败|加载中/.test(e.textContent || '')).map((e) => (e.textContent || '').slice(0, 24) + '[在 ' + e.__path + ']');
   ok(bad.length === 0, tabId + ' 异步数据全部加载成功' + (bad.length ? '（' + bad.slice(0, 3).join(' ｜ ') + '）' : ''));
 }
 
@@ -221,7 +223,7 @@ for (const tabId of Object.keys(EXPECT)) {
     hooks.go(tabId);
     await new Promise((r) => setTimeout(r, ms));
     const acc = [];
-    const walk = (n) => { for (const c of (n.children || [])) { if (c._text) acc.push(c._text); walk(c); } };
+    const walk = (n) => { for (const c of (n.children || [])) { if (c._text || c._html) acc.push(c.textContent); walk(c); } };
     walk(byId['main']);
     return acc.join('\n');
   };
@@ -280,6 +282,19 @@ for (const tabId of Object.keys(EXPECT)) {
   ok(/一共 \d+ 天存档/.test(worldTxt), '月历下方标明一共有多少天存档');
   ok(/存档写在 diary 文件夹里/.test(worldTxt), '写清了存档位置（一天一个 .md，记事本能打开）');
   ok(/她的话（私人日记）/.test(worldTxt) && /周末还是没能完全躺平/.test(worldTxt), '点日期能真的渲染出那天存档的内容（不是空白）');
+
+  // ⑩ 交付物文案（2026-09-13 用户第三次强调："后台有很多你的备注一样的词"）
+  //     真因＝mut() 以前用 textContent，`**加粗**` 的星号原样显示、换行还被压成一个空格。
+  {
+    const all = [];
+    for (const t of ['home', 'persona', 'world', 'relation', 'memory', 'brain', 'nwa', 'ops']) all.push(await txtOf(t, 140));
+    const txt = all.join(String.fromCharCode(10));
+    ok(!/\*\*/.test(txt), '界面上不会露出 markdown 星号（不再像"我写给自己的批注"）');
+    ok(!/（20\d\d-\d\d-\d\d[^）]{0,20}(改|修)/.test(txt), '界面上没有"某日改动"式叙述');
+    const DEV = ['我造', '踩过', '我踩', '我写的', '别忘了', '这里注意', '回归守卫', '给下一个我'];
+    const devHit = DEV.filter((w) => txt.includes(w));
+    ok(devHit.length === 0, '界面上没有开发者口吻' + (devHit.length ? '：' + devHit.join('、') : ''));
+  }
 
   // ⑨ 专属昵称必须真接线（以前只在已删除的「关系阶段」跃迁时才进提示词）
   ok(/你心里给他起的名字是/.test(fs.readFileSync(path.join(root, 'src/soul.js'), 'utf8')), '「专属昵称」真的进她的提示词了（修黑盒）');

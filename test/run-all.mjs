@@ -14,6 +14,7 @@ const TIMEOUT_MS = Math.max(10, Number(process.argv[2] || process.env.SMOKE_TIME
 
 // 顺序：先核心（灵魂/通道/记忆），再世界与生活，再界面与审计
 const FILES = [
+  'memory-bucket-smoke',
   'boot-smoke', 'console-smoke', 'chain-smoke', 'tone-life-smoke', 'life-smoke',
   'night-smoke', 'rhythm-smoke', 'world-smoke', 'diary-smoke', 'fix-smoke', 'deform-memory-smoke', 'deform-traits-smoke',
   'memory-voice-smoke', 'inbound-smoke', 'interest-smoke', 'day-event-smoke', 'rename-smoke',
