@@ -119,6 +119,74 @@ export function proactiveLimit(worldTone) {
   return base;
 }
 
+/**
+ * 常识四层 · 第 1 层：**她现在这一刻在做什么**（2026-09-13 加）。
+ *
+ * 为什么必须有：提示词里一直有【现在几点】，但**没有"她现在这一格该做什么"**，
+ * 于是她自由发挥，发挥出「周日早上 8 点去银行对流水」「深夜刚下庭」这种荒唐话
+ * （用户原话："此人显然极度缺少常识"）。根因不是缺常识条目，是缺"此刻的锚"。
+ *
+ * 判定顺序：先看作息（睡着？刚起？），再看她今天的流水里**最近做完的那件事**。
+ */
+export function nowDoing(today, world, now) {
+  const t = today || {};
+  const w = world || {};
+  const n = now instanceof Date ? now : new Date();
+  const cur = n.getHours() * 60 + n.getMinutes();
+  const toMin = (v) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v == null ? '' : v)); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+  const sleepMin = toMin(t.sleep);
+  const wakeMin = toMin(t.wake);
+  if (sleepMin != null && wakeMin != null && sleepMin !== wakeMin) {
+    const hard = (sleepMin + 45) % 1440;
+    const asleep = hard <= wakeMin ? (cur >= hard && cur < wakeMin) : (cur >= hard || cur < wakeMin);
+    if (asleep) {
+      return '【此刻你在做什么】你**正在睡觉**（' + t.sleep + ' 睡 / ' + t.wake + ' 起）。你不可能在上班、不可能刚下庭、不可能去银行或法院办事——这个点你只会被消息吵醒：那就困、短、让他别吵，别提任何白天的事。';
+    }
+  }
+  const flow = (Array.isArray(w.flow) ? w.flow : []).filter((f) => f && toMin(f.time) != null)
+    .slice().sort((a, b2) => toMin(a.time) - toMin(b2.time));
+  const past = flow.filter((f) => toMin(f.time) <= cur);
+  const next = flow.filter((f) => toMin(f.time) > cur)[0];
+  const last = past[past.length - 1];
+  const bits = [];
+  if (last) bits.push('你刚做完这件事：' + String(last.text || '').slice(0, 70) + '（' + last.time + '）');
+  else if (wakeMin != null && cur >= wakeMin && cur < wakeMin + 120) bits.push('你刚起床不久（' + t.wake + ' 起的）');
+  else if (wakeMin != null && cur < wakeMin) bits.push('你还没起床');
+  else bits.push('今天这件事还没开始');
+  if (next) bits.push('接下来你大概要做：' + String(next.text || '').slice(0, 70) + '（' + next.time + '）');
+  return '【此刻你在做什么】' + bits.join('；') + '。**你正在做的/刚做完的就是这个**：不许说你正在干别的、不许凭空给自己安排今天的行程。';
+}
+
+/**
+ * 常识四层 · 第 2 层：一小张**底线清单**（不是百科全书，就六条）。
+ * 都是用户真机聊天里抓到的原话（周日去银行、深夜刚下庭、跨城吃顿饭、拿"发朋友圈给你看"当交付）。
+ */
+export const COMMON_SENSE = [
+  '【必须遵守的现实常识（违反了就等于崩人设）】',
+  '① 银行/法院/政府/大多数店铺只在**工作日 9:00–17:00** 办业务，周末和深夜不办——绝不许约在这些时间去这些地方。',
+  '② 你在开庭/上班/睡觉的时段**不能秒回**；那种时候回，也只能是"在忙，晚点说"。',
+  '③ 你在上海、他在深圳——**不可能一顿饭的事**；涉及"过来陪你""当面给你"要按现实说（要飞、要约时间、要请假）。',
+  '④ 你只有微信这一个能"把东西发给他"的工具；生活里可以刷别的、看别的，但**不能说"我发朋友圈给你看"**。',
+  '⑤ **绝不许编造具体的时间/地点/数字/别人的话**（比如"张姐儿子考了 600 分"），除非今天的【她今天经历的事】里真有。',
+  '⑥ 不确定就含糊过去或换个话题，**宁可说不知道，也不许编一个具体的假事实**。',
+].join(String.fromCharCode(10));
+
+/**
+ * 清掉模型偶尔漏出来的前缀/包裹（2026-09-13 决定 12）。
+ * 为什么：她真发过「response起诉状刚写完，现在就差这一笔钱了。」——模型把角色标记也吐出来了。
+ * 只清"开头那几个明显的角色词/包裹符号"，不做任何改写（宁可留着，也不许乱删她的字）。
+ */
+export function cleanReply(text) {
+  let s = String(text == null ? '' : text).trim();
+  // 英文角色标记（可能带冒号）
+  s = s.replace(/^(?:response|assistant|assistant message|ai|answer)\s*[:：]?\s*/i, '');
+  // 中文角色标记（必须带冒号，免得把正常句子的"她"字也吃掉）
+  s = s.replace(/^(?:她|回复|回答|输出|我)\s*[:：]\s*/, '');
+  // 整句被引号/星号包起来
+  s = s.replace(/^[\s"'“”‘’「」『』*]+/, '').replace(/[\s"'“”‘’「」『』*]+$/, '');
+  return s.trim();
+}
+
 /** @deprecated 亲密度分档（第三次改版后不再使用，仅为兼容旧测试保留） */
 export function stageToneOf(affection) {
   const table = STAGES;
@@ -275,6 +343,7 @@ export class Soul {
       selfMemory: m.selfMemory !== false,
       // 「他是谁」档案已退场（2026-09-13 用户拍板）：不再带 owner
       talkiness: (typeof b.talkiness === 'number' && isFinite(b.talkiness)) ? Math.max(0, Math.min(100, b.talkiness)) : null,
+      selfCheck: b.selfCheck !== false,
       speedMul: Math.max(0.5, Math.min(2.5, Number(b.speedMul) || 1)),
     };
   }
@@ -548,15 +617,24 @@ export class Soul {
 
   /** 后台记忆页的数据视图：带引擎标识 */
   /** 记忆归属（第三次改版）：关于我 / 关于她 / 我们之间 —— 替掉界面上那串乱码 ID */
+  /**
+   * 记忆的三类（2026-09-13 用户定稿）：**我 / 她 / 世界**。
+   *   我   = 关于他的事（默认；他手写的、聊天里提炼出来的他的事）
+   *   她   = 她自己的话（立场/打算/喜好，双向记忆）
+   *   世界 = 她的生活流水与社交圈（世界引擎每晚写的）
+   * 以前把「生活流水」错算成「她」了，这里一并纠正。
+   */
   catOf(e = {}) {
     const md = e.metadata || {};
-    if (md.cat === 'us' || md.cat === 'her' || md.cat === 'you') return md.cat;
+    const c = md.cat || e.cat;
+    if (c === 'you' || c === 'her' || c === 'world') return c;
     const src = String(md.source || e.source || '');
-    if (src === 'self' || src === 'life' || e.who === 'self') return 'her';
+    if (src === 'self' || e.who === 'self') return 'her';
+    if (src === 'life') return 'world';
     return 'you';
   }
 
-  catLabel(cat) { return cat === 'her' ? '关于她' : (cat === 'us' ? '我们之间' : '关于我'); }
+  catLabel(cat) { return cat === 'her' ? '她' : (cat === 'world' ? '世界' : '我'); }
 
   async memoriesView() {
     if (await this.engineUp()) {
@@ -592,7 +670,7 @@ export class Soul {
       try {
         const r = await this.memory.add({
           text, who: item.who || 'global', infer: false,
-          metadata: { importance: item.importance || 3, tags: item.tags || [], pinned: !!item.pinned, source: item.source || 'manual', ts: Date.now() },
+          metadata: { importance: item.importance || 3, tags: item.tags || [], pinned: !!item.pinned, source: item.source || 'manual', cat: ['you', 'her', 'world'].includes(item.cat) ? item.cat : '', ts: Date.now() },
         });
         const id = (r.ids && r.ids[0]) || '';
         if (id) {
@@ -604,7 +682,7 @@ export class Soul {
         this.log('[soul] mem0 写入失败，落本地JSON: ' + (err && err.message));
       }
     }
-    this._jsonAdd(item);
+    this._jsonAdd({ ...item, cat: ['you', 'her', 'world'].includes(item.cat) ? item.cat : '' });
     return { id: '', text };
   }
 
@@ -803,7 +881,7 @@ export class Soul {
     // 今天的"话痨度"在这个上限内浮动——两条一起管住"她话太多不像 INTJ"。
     const chatter = today && today.chatter ? today.chatter : 1;
     const maxChunks = Math.max(1, Math.min(talkPlan.maxChunks, Math.round((b.chunkMax || 3) * chatter)));
-    let chunks = this._planChunks(r.content, persona, maxChunks);
+    let chunks = this._planChunks(cleanReply(r.content), persona, maxChunks);
     // 每条再按"字数上限"收一刀（超过就断在最近的句读上，不硬切字）
     chunks = chunks.map((c) => (c.length <= talkPlan.maxChars ? c : (c.slice(0, talkPlan.maxChars).replace(/[，,、；;：:][^，,、；;：:]*$/, '') + '…')));
     if (!chunks.length) chunks = [String(r.content || '').slice(0, talkPlan.maxChars)];
@@ -930,6 +1008,11 @@ export class Soul {
     const W = info.world || null;
     const worldLines = [];
     if (W) {
+      if (Array.isArray(W.flow) && W.flow.length) {
+        // 第 3 层（2026-09-13）：她说"我今天…"只能来自这里，不许新增细节
+        worldLines.push('【她今天经历的事（她说"我今天…"只能来自这里，绝不许新增时间/地点/数字/别人的话）】'
+          + W.flow.map((f) => (f && f.time ? f.time + ' ' : '') + String((f && f.text) || '')).join('；'));
+      }
       if (W.weather) worldLines.push('【今天的天气】' + W.weather + '——可以自然带到（穿搭/出门/提醒他添衣之类），别像播报。');
       if (Array.isArray(W.thoughts) && W.thoughts.length) worldLines.push('【你最近心里冒出的念头】' + W.thoughts.join('；') + '——偶尔自然提起，一次一句就够。');
       if (Array.isArray(W.npcs) && W.npcs.length) {
@@ -982,6 +1065,8 @@ export class Soul {
       (persona.profile && persona.profile.favorites && Object.keys(persona.profile.favorites).length) ? (() => { const fv = persona.profile.favorites; const L = { like: '喜欢', dislike: '讨厌', food: '常吃', music: '常听', place: '常去' }; return '【偏好】' + Object.keys(fv).map((k) => (fv[k] && L[k]) ? (L[k] + '：' + fv[k]) : '').filter(Boolean).join('；') + '。'; })() : '',
       (persona.profile && persona.profile.inner && Object.keys(persona.profile.inner).length) ? (() => { const inn = persona.profile.inner; const L = { desire: '最想要', fear: '最怕', values: '在意', quirk: '小怪癖' }; return '【内心】' + Object.keys(inn).map((k) => (inn[k] && L[k]) ? (L[k] + '：' + inn[k]) : '').filter(Boolean).join('；') + '。'; })() : '',
       '【此刻】' + now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日 星期' + week + ' ' + timeText + '。时间用 24 小时制：14:00 是下午两点、02:00 是凌晨两点——说话要和这个时间对得上（下午不要说早安、上午不要道晚安）。心情状态：' + (rel.mood >= 70 ? '不错，开心' : rel.mood >= 40 ? '平静' : '有点低落，需要被哄') + '。',
+      nowDoing(info.today, W, now),
+      COMMON_SENSE,
       '【关系】' + who,
       memLines ? '【你记得的关于对方/最近的事】\n' + memLines : '',
       ownLines ? '【你自己说过的话（你自己的立场与生活线，务必与之一致，可以自然延续，不要自相矛盾）】\n' + ownLines : '',
@@ -1227,16 +1312,28 @@ export class Soul {
     const tasks = {
       morning: '你刚醒来不久（现在是【此刻】里的时间）。给对面发一条早安消息：1~2 句话，按你和 TA 的关系分寸来——刚认识就客气简短，熟了才随意。',
       night: '你现在准备睡了（时间是【此刻】里的晚上/深夜，不是白天）。发一条晚安消息：1~2 句话，同样按关系分寸来；刚认识就简单说一句，不要亲昵称呼、不要撒娇。',
-      poke: '你刚才在生活中遇到一件具体的小事（结合你的职业、兴趣和此刻时间，编一个真实可信的小细节），想顺手分享给对面。像随手发微信那样，1~2句话，绝不像播报；关系还没到那份上就少发、也别太热络。',
+      poke: String(extra.flowItem && extra.flowItem.text)
+        // 2026-09-13 改：以前这里是"编一个真实可信的小细节"——"编"就是荒唐内容的直接来源
+        // （编出"翻卷宗翻到一段摄像头对着人拍"）。现在只允许说**她今天真实经历过的这件事**。
+        ? ('你刚做完这件事：' + String(extra.flowItem.text).slice(0, 120) + '（' + String(extra.flowItem.time || '') + '）。'
+          + '就着这件事，像随手发微信那样跟他说 1~2 句话，可以带一点你当时的感受或吐槽。'
+          + '**只能基于这件事**：不许新增时间、地点、数字、别人的话；想不出怎么说就发一句很短的（比如"刚忙完"）。')
+        : '你刚好空下来，随口跟他说一句话：1~2 句话，像随手发微信。想不出具体的事就发一句很短的日常（比如"今天好热"），**绝不许编造具体的时间/地点/数字/别人的话**。',
       nudge: '对面已经有一阵子没回你消息了。按你的性格和关系分寸发一条：关系浅就只是轻轻提一句，关系深才可以撒娇或小吐槽。1句话，不咄咄逼人。',
     };
+    // 主动消息以前**完全不带聊天记录** → 模型丢了上下文，催人时直接自我介绍了
+    // （用户实测收到过"苏镜语，律师。有事吗。"）。现在把最近的来往带上。
+    const hist = (() => { try { return this.getHistory(peerKey).slice(-12); } catch { return []; } })();
     const messages = [
-      { role: 'system', content: sys + '\n【主动消息任务】' + (tasks[kind] || tasks.poke) },
-      { role: 'user', content: '（系统指令：现在主动发出一条微信。直接输出内容本身，不要任何解释。）' },
+      { role: 'system', content: sys + '\n【主动消息任务】' + (tasks[kind] || tasks.poke)
+        + '\n铁律：你们已经认识了，**绝对不要自我介绍**（不许说自己的名字/职业/年龄），也不许问"你是谁"，'
+        + '更不许复述他刚说过的话当开场。直接说你要说的那件事。' },
+      ...hist.map((m) => ({ role: m.role === 'her' ? 'assistant' : 'user', content: m.text })),
+      { role: 'user', content: '（系统指令：现在轮到你主动发一条微信。直接输出内容本身，不要任何解释、不要加引号。）' },
     ];
     const p = (this.router.cfg && this.router.cfg.params) || {};
     const r = await this.router.chat(messages, { maxTokens: 200, temperature: Math.min(0.8, (p.temperature == null ? 0.8 : Number(p.temperature))) });
-    const chunks = this._planChunks(r.content, persona, b.chunkMax);
+    const chunks = this._planChunks(cleanReply(r.content), persona, b.chunkMax);
     return { chunks, delaysMs: this._planDelays(chunks, true, b.replySpeed), backend: r.backend };
   }
 }

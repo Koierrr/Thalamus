@@ -52,11 +52,17 @@ ok(!sentKinds.includes('night'), '睡着之后（03:30）不会发晚安 —— 
 const st3 = JSON.parse(fs.readFileSync(path.join(dir, 'life-state.json'), 'utf8'));
 ok(st3.night !== true, '而且不会被误标成今天已发过——今晚的窗口还留着（睡前会正常发）');
 
-// 安静时段：不发
+// 她睡着时：一条主动消息都不发（2026-09-13 起：睡眠窗口取代了旧的「安静时段」）
+// 这组配置是 02:00 睡 / 08:00 起 → 入睡兜底 02:45，05:00 一定在睡
 sentKinds = []; dir = mk();
-life = new Life({ dir, config: () => ({ life: { ...baseCfg.life, quietHours: '00:00-09:00' } }), logger: () => {} });
+life = new Life({ dir, config: () => ({ life: { ...baseCfg.life } }), logger: () => {} });
+await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(5, 0) });
+ok(sentKinds.length === 0, '她睡着时（凌晨 5:00）一条主动消息都不发');
+// 同一个点，如果她已经醒了（08:05，起床 08:00）→ 早安照发
+sentKinds = []; dir = mk();
+life = new Life({ dir, config: () => ({ life: { ...baseCfg.life } }), logger: () => {} });
 await life.tick({ soul: fakeSoul(sentKinds), sendToOwner: async () => {}, now: at(8, 5) });
-ok(!sentKinds.includes('morning'), '安静时段内不发任何消息');
+ok(sentKinds.includes('morning'), '醒来之后（08:05）早安照发——不再有"安静时段"挡着');
 
 // ── ③ 关系阶段：刚认识就不主动 ──
 sentKinds = []; dir = mk();

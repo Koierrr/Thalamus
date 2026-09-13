@@ -304,9 +304,11 @@ export class WorldEngine {
     // 关系现状（亲密度/已聊/认识天数）——你（用户）拍板：分寸由世界引擎综合判断，不写死表
     // 她的过去（分层）+ 已经告诉过他的（编剧每晚维护，避免重复讲/前后矛盾）
     let pastLine = '';
+    let pastMissing = false;
     try {
       const P = persona.profile || {};
       const past = P.past || {};
+      pastMissing = !(past.surface || past.middle || past.deep);
       const dis = Array.isArray(prev.disclosed) ? prev.disclosed.slice(-12) : [];
       const disTxt = dis.length ? dis.map((x) => (x.layer || '') + '：' + (x.topic || '')).join('；') : '（还没说什么）';
       const L = ['【她的过去·分层（她对外一层层透露，绝不一次说完）】'];
@@ -366,13 +368,17 @@ export class WorldEngine {
       ',"disclosedAdd":[{"layer":"表层|中层|深层","topic":"今晚她新告诉他的一个过去细节（如：老家在苏州）"}]0-2条，没有就空数组' +
       ',"tone":{"intimacy":今天她该表现的熟度0-100,"address":"明天她该怎么称呼他（例如：用名字/叫哎/叫XX）","style":"明天的语气要点，一句话","proactive":{"morning":明天要不要主动说早安true/false,"night":要不要说晚安true/false,"pokes":明天最多主动几次0-5,"nudges":催他几次0-5},"chunks":明天她一条回复最多几条消息1-4（话少的人给1）,"maxChars":每条最多几个字8-80（话少的人给15左右）,"forbid":["明天绝对不要做的事，2-4条"],"reason":"一句理由（为什么是这个分寸）"}' +
       ',"statusLine":"她今天状态的一句话（第一人称、口语，例如：今天案子卡住了，有点闷）"' +
+      ',"past":{"surface":"她的表层过去（职业/城市/日常喜好，随时可聊）","middle":"她的中层过去（老家/父母大概/读书/换过什么工作，熟人~朋友被问到才零星说）","deep":"她的深层过去（创伤/心结/真正的梦想，亲近以上+气氛对了才说）"}' +
       ',"insomnia":今晚她是不是失眠到很晚true/false' +
       ',"proactiveAt":"明天她大概什么时候会想找他（例如 16:00 前后 / 通勤路上 / 睡前；不想找就给空字符串）"' +
       ',"rhythm":{"baseWake":"她平时的起床HH:MM","baseSleep":"她平时的睡觉HH:MM","weekendShiftMin":周末推迟分钟0-180,"nightOwlProb":夜猫子概率0-1,"allNighterProb":通宵概率0-1}' +
       ',"workload":今天的工作负荷0-100（不是工作日填0）' +
       (jobOn && persona.job ? ',"job":{"type":"office|shift|freelance|night|student|none","workStart":"HH:MM","workEnd":"HH:MM","workDays":"1,2,3,4,5","reason":"你判断她明天怎么上班的一句理由"}' : '') +
       '}',
-      '规则：**话量必须跟她的性格一致**（性格六维里温度/发起力低的人惜字如金：chunks=1、maxChars≈15，别让她变成话痨）；**分寸必须与【你们的关系现状】严格匹配**——亲密度低（比如 0~20）时她就该客气、有边界感，不能撒娇、不能叫昵称、不能要求对方为她做事、不能深夜发消息；亲密度越高才可以越随意越亲昵。宁可冷淡也别越界。；一切与她的性格/职业/兴趣/城市自洽；wake/sleep 必须在【作息基准】允许的范围内，且要和流水剧情对得上（如果今晚日记里是熬夜赶稿，明天就明显晚起）；流水要像真实生活（有琐碎有起伏）' + (weather ? '，且与真实天气自洽' : '') + '；秘密是她的私人边界，只在合适时机被提起；绝不提AI/模型/生成。',
+      '【她的过去（2026-09-13 决定）】**完全由你负责生成与推进，后台不再由用户手写**。'
+      + (pastMissing ? '她现在**还没有过去**：这一晚请为她想出完整的三层过去（surface/middle/deep），与她的职业/城市/年龄/性格/MBTI 严格自洽，像真人的往事（例：老家在哪、父母做什么、换过什么工作、有什么心结、真正想做的事）。每层 40~120 字，写成事实、不要写成小说。' : '她已经有过去（见上）：**这一晚最多再补一条**很短的具体细节（或把某一层写得更具体一点），能自洽就别硬加；没得补就把三层原样返回。')
+      + '绝对不许和【已经告诉过他的】矛盾，也不许把她已经说过的事写成"从没说过"。'
+      + '规则：**话量必须跟她的性格一致**（性格六维里温度/发起力低的人惜字如金：chunks=1、maxChars≈15，别让她变成话痨）；**分寸必须与【你们的关系现状】严格匹配**——亲密度低（比如 0~20）时她就该客气、有边界感，不能撒娇、不能叫昵称、不能要求对方为她做事、不能深夜发消息；亲密度越高才可以越随意越亲昵。宁可冷淡也别越界。；一切与她的性格/职业/兴趣/城市自洽；wake/sleep 必须在【作息基准】允许的范围内，且要和流水剧情对得上（如果今晚日记里是熬夜赶稿，明天就明显晚起）；流水要像真实生活（有琐碎有起伏）' + (weather ? '，且与真实天气自洽' : '') + '；秘密是她的私人边界，只在合适时机被提起；绝不提AI/模型/生成。',
     ];
     if (evolveDue) {
       sys.push('【性格周结算（满7天一次，这次要做）】她和你生活的这一周：被哄了' + (evo.warm || 0) + '次、被怼了' + (evo.rude || 0) + '次、聊了' + (evo.chats || 0) + '轮。请给六维微调：每个键 -2~+2（可以不变），全维度变动合计绝对值≤5，方向要与这些互动的因果相符（常被哄→温度/依恋缓涨；常被冷落怼→锐度涨依恋跌；总她在主动→发起力涨）。铁律：只能微调"表达层"，绝不能违背她的MBTI认知类型（如 Fi 主导的人再暖也是安静深沉的暖，不会变成 Fe 式外放热情）；拿不准就少动或不动。');
@@ -545,6 +551,24 @@ export class WorldEngine {
     if (evolveDue) {
       try { fs.writeFileSync(path.join(this.dir, 'evolution.json'), JSON.stringify({ lastEvolvedAt: Date.now(), warm: 0, rude: 0, chats: 0 })); } catch {}
     }
+
+    // 她的过去：世界引擎自己生成与推进（2026-09-13 决定 C3）——后台只读，用户不再手写
+    try {
+      const cur = ((persona.profile || {}).past) || {};
+      const dp = (d.past && typeof d.past === 'object') ? d.past : {};
+      const cl = (v, n) => String(v == null ? '' : v).trim().slice(0, 400);
+      const next = {
+        surface: cl(dp.surface) || cl(cur.surface),
+        middle: cl(dp.middle) || cl(cur.middle),
+        deep: cl(dp.deep) || cl(cur.deep),
+      };
+      const changed = next.surface !== cl(cur.surface) || next.middle !== cl(cur.middle) || next.deep !== cl(cur.deep);
+      if (changed && this.soul && typeof this.soul.savePersona === 'function') {
+        this.soul.savePersona({ profile: { ...(persona.profile || {}), past: next } });
+        out.pastUpdated = true;
+        this.log('[world] 她的过去已' + (pastMissing ? '生成' : '推进') + '（表层 ' + next.surface.length + ' 字 / 中层 ' + next.middle.length + ' 字 / 深层 ' + next.deep.length + ' 字）');
+      }
+    } catch (err) { this.log('[world] 她的过去写入失败（不影响当晚生成）: ' + (err && err.message)); }
 
     // 纪念日：认识满100天/整年，标记成今天的日子
     const ann = this.anniversary();

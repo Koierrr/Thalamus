@@ -90,9 +90,13 @@ export class Life {
       pokeWindow: Array.isArray(c.pokeWindow) && c.pokeWindow.length === 2 ? c.pokeWindow : ['10:00', '22:00'],
       nudgeMinutes: Number(c.nudgeMinutes) || 20,
       nudgeMaxPerDay: Number(c.nudgeMaxPerDay) || 1,
-      // 新：关系阶段给的主动上限（亲密度低 → 她不该老来找你）；quietHours=不打扰你的时段
+      // 世界引擎给的主动上限（只能收紧最多几条，不再是配额）
       stageLimit: null,
-      quietHours: String(c.quietHours || ''),
+      // 事件驱动分享要用的输入（index.js 注入）
+      flow: Array.isArray(c.flow) ? c.flow : [],
+      traits: (c.traits && typeof c.traits === 'object') ? c.traits : {},
+      battery: c.battery == null ? null : Number(c.battery),
+      mood: c.mood == null ? null : Number(c.mood),
     };
   }
 
@@ -113,6 +117,27 @@ export class Life {
     return (h % (2 * minutes + 1)) - minutes;
   }
 
+  /** 同一天同一个 key 恒定的 0~1 随机数（"今天要不要说这件事"用它，避免每分钟重掷变成抽奖机） */
+  _unitFor(kind, now) {
+    const h = hashStr(dayKey(now) + '::' + kind);
+    return (Math.abs(h) % 1000) / 1000;
+  }
+
+  /**
+   * 她今天有多想说话（0~1）——主动分享的"冲动门"。
+   * 由性格（发起力/依恋）+ 当天社交电量 + 心情决定：电量低、心情差 → 她今天就是不想理人。
+   */
+  _impulse(cfg = {}) {
+    const t = cfg.traits || {};
+    const num = (v, d) => (v == null || !isFinite(Number(v)) ? d : Number(v));
+    const init = num(t.initiative, 50);
+    const att = num(t.attachment, 50);
+    const batt = num(cfg.battery, 60);
+    const mood = num(cfg.mood, 60);
+    const v = 0.15 + init / 400 + att / 800 + (batt - 50) / 300 + (mood - 50) / 300;
+    return Math.max(0.05, Math.min(0.9, v));
+  }
+
   /**
    * 夜间三态（第三次改版）：清醒 → 准备睡（说了晚安，还在刷手机）→ 真睡着
    * 她说了晚安≠立刻睡：收拾/刷手机/失眠都可能拖很久。多久真睡着由世界引擎的 insomnia 决定。
@@ -127,12 +152,64 @@ export class Life {
     return { bedPhase: 'preparing', bedAt: t, bedDue: t + dur, bedInsomnia: insomnia };
   }
 
+  /**
+   * 现在这一刻，按她今天的作息，她**该不该在睡**（2026-09-13 加）。
+   *
+   * 为什么需要它：原来的夜间三态要求"她先发出晚安"才启动，于是只要那晚没发晚安
+   * （世界引擎说不用发 / 电脑没开错过窗口 / 旧剧本没这个字段），她就**永远醒着**——
+   * 用户实测"显示今天 01:10 睡，6 点找她照样秒回"。
+   * 现在：**睡觉时间 +45 分钟**（容错：她可能刷会儿手机才真睡）到**起床时间**之间，
+   * 一律算睡着，不再依赖她发过晚安。
+   */
+  _isAsleepByClock(now, cfg = {}) {
+    const c = { ...this.cfgLife(), ...cfg };
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const sleepMin = hm(c.sleep);
+    const wakeMin = hm(c.wake);
+    const hard = (sleepMin + 45) % 1440; // 入睡兜底时刻
+    if (hard === wakeMin) return false;  // 区间为空（作息填得自相矛盾）→ 不判睡着
+    // 跨天区间判断：hard <= wakeMin 时是 [hard, wakeMin)，否则是 [hard, 24h) ∪ [0, wakeMin)
+    return hard <= wakeMin ? (cur >= hard && cur < wakeMin) : (cur >= hard || cur < wakeMin);
+  }
+
+  /** 现在是不是她的"白天"（起床时间 ~ 睡觉时间）。用来判断该不该把她从"睡着"叫醒，
+   *  不然晚上 23:40（她 23:00 睡、已经进入睡前准备）会被误判成"早上了该醒"。 */
+  _isDaytime(now, cfg = {}) {
+    const c = { ...this.cfgLife(), ...cfg };
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const wakeMin = hm(c.wake);
+    const sleepMin = hm(c.sleep);
+    return wakeMin <= sleepMin ? (cur >= wakeMin && cur < sleepMin) : (cur >= wakeMin || cur < sleepMin);
+  }
+
+  /** 对外：她现在是不是睡着的（tick 与 index.js 的回复闸门都用它） */
+  isAsleepNow(now, cfg = {}) {
+    const n = now instanceof Date ? now : new Date();
+    const s = this._state();
+    if (s.bedPhase === 'asleep' && !this._isAsleepByClock(n, cfg)) return false; // 起床时间到了 → 已醒
+    if (s.bedPhase === 'asleep') return true;
+    return this._isAsleepByClock(n, cfg);
+  }
+
   /** 当前夜间状态：awake / preparing / asleep（每次 tick 或读取时自动推进） */
-  nightPhase(now) {
+  nightPhase(now, cfg = {}) {
     const t = (now instanceof Date ? now : new Date()).getTime();
     const s = this._state();
     if (s.bedPhase === 'preparing' && s.bedDue && t >= s.bedDue) {
       s.bedPhase = 'asleep';
+      this._save(s);
+    }
+    // 时间表兜底（2026-09-13）：到点就是睡着/醒来，不再依赖她发过晚安、也不依赖早上发过早安
+    const byClock = this._isAsleepByClock(now instanceof Date ? now : new Date(), cfg);
+    if (byClock && s.bedPhase !== 'asleep') {
+      s.bedPhase = 'asleep';
+      s.bedAt = s.bedAt || t;
+      this._save(s);
+    } else if (s.bedPhase === 'asleep' && this._isDaytime(now instanceof Date ? now : new Date(), cfg)) {
+      // 天亮了（进了她的白天）→ 自动醒，不依赖她早上发过早安
+      s.bedPhase = 'awake';
+      s.bedAt = 0;
+      s.bedDue = 0;
       this._save(s);
     }
     return s.bedPhase || 'awake';
@@ -195,18 +272,29 @@ export class Life {
       s.date = dayKey(now); s.morning = false; s.night = false; s.pokes = 0; s.nudges = 0;
       s.bedPhase = 'awake'; s.bedAt = 0; s.bedDue = 0;
       s.backupDone = false; delete s.pendingSince; s.skipped = {}; delete s.claimedPokesOff;
+      delete s.usedFlow; delete s.lastPokeAt;
     }
 
     const cur = now.getHours() * 60 + now.getMinutes();
-    const quiet = this.isQuiet(now, cfg.quietHours);
     const lim = cfg.stageLimit || null;
     const allowMorning = !lim || lim.morning !== false;
     const allowNight = !lim || lim.night !== false;
+    // 分享/催的上限：世界引擎给的 + 后台设的，取小（只是"最多几条"的天花板，不再是"必须发满 N 条"的配额）
     const maxPokes = lim && lim.pokes != null ? Math.min(cfg.pokesPerDay, lim.pokes) : (lim ? 0 : cfg.pokesPerDay);
     const maxNudges = lim && lim.nudges != null ? Math.min(cfg.nudgeMaxPerDay, lim.nudges) : (lim ? 0 : cfg.nudgeMaxPerDay);
 
-    const doSend = async (kind) => {
-      const r = await soul.proactive(kind, {});
+    const skip = (what, why) => { s.skipped = { ...(s.skipped || {}), [what]: why }; };
+
+    // ── 她已经睡着了：一条主动消息都不发（2026-09-13 起不依赖"发过晚安"）──
+    if (this.isAsleepNow(now, cfg)) {
+      if (s.bedPhase !== 'asleep') { s.bedPhase = 'asleep'; s.bedAt = s.bedAt || now.getTime(); this._save(s); }
+      skip('all', '她已经睡了（' + String(cfg.sleep || '') + ' 睡 / ' + String(cfg.wake || '') + ' 起）——睡着不打扰');
+      this._save(s);
+      return sent;
+    }
+
+    const doSend = async (kind, extra = {}) => {
+      const r = await soul.proactive(kind, extra);
       for (let i = 0; i < r.chunks.length; i++) {
         const d = i < r.delaysMs.length ? Math.min(r.delaysMs[i], 4000) : 500;
         if (d > 0) await new Promise((res) => setTimeout(res, d));
@@ -214,15 +302,13 @@ export class Life {
         sent.push({ kind, text: r.chunks[i] });
       }
     };
-    const skip = (what, why) => { s.skipped = { ...(s.skipped || {}), [what]: why }; };
 
     // ── 早安：起床时刻 ±25min 抖动；窗口 = 起床后 90 分钟内（错过不补发）──
     if (cfg.morningOn && allowMorning && !s.morning) {
       const target = hm(cfg.wake) + this._jitterFor('morning', now, 25);
       const ph = absWindowPhase(now, target, 0, 90);
       if (ph === 'in') {
-        if (quiet) { skip('morning', '正处安静时段'); }
-        else { await doSend('morning'); s.morning = true; this._save(s); }
+        await doSend('morning'); s.morning = true; this._save(s);
       } else if (ph === 'after') {
         s.morning = true;
         skip('morning', '错过了早安窗口（起床后 90 分钟里电脑没在跑）——不补发，免得下午才说早安');
@@ -244,8 +330,7 @@ export class Life {
       // 只在她睡着**之前**发（睡后就发不出晚安了）：窗口 = 睡前 90 分钟 ~ 睡前 +15 分钟（那 15 分钟是容错）
       const ph = absWindowPhase(now, target, crossMidnight ? 90 : 90, 15, crossMidnight ? sleepMin : null);
       if (ph === 'in') {
-        if (quiet) { skip('night', '正处安静时段'); }
-await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, cfg)); this._save(s);
+        await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, cfg)); this._save(s);
       } else if (ph === 'after') {
         s.night = true;
         skip('night', '错过了晚安窗口（睡前 90 分钟内电脑没在跑）——不补发：她睡着以后不能再发晚安');
@@ -257,22 +342,52 @@ await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, 
       this._save(s);
     }
 
-    // ── 日常分享：活跃窗口切段，受"关系阶段上限 + 安静时段"约束 ──
-    if (maxPokes > 0 && s.pokes < maxPokes && this._inWindow(now, cfg.pokeWindow) && !quiet) {
-      const A = hm(cfg.pokeWindow[0]); const B = hm(cfg.pokeWindow[1]);
-      const span = Math.max(60, (B >= A ? B - A : 1440 - A + B));
-      const slot = A + Math.floor((span / maxPokes) * (s.pokes + 0.5)) + this._jitterFor('poke' + s.pokes, now, 20);
-      // 世界引擎说了"她明天大概什么时候想找他" → 那段之外基本不主动（她开庭/上班时不会来找你）
-      const pAt = this._parseProactiveAt(cfg.proactiveAt);
-      if (pAt != null) {
-        const raw = Math.abs(cur - pAt);
-        if (Math.min(raw, 1440 - raw) > 90) return;
-      }
-      if (cur >= slot) {
-        await doSend('poke');
+    // ── 日常分享（2026-09-13 改：事件驱动，彻底换掉"配额排班"）────────────────────────
+    // 旧逻辑是"每天 N 次 → 把时段平均切成 N 段 → 到点就发"，它是个调度器不是人，
+    // 于是长出：机械间隔、内容靠"编一个小细节"（编出荒唐内容）、重启后补发、00:00-00:00 时
+    // 所有门槛挤在 00:00 附近 → 每 60 秒发一条直到配额用完（用户实测连发 3 条）。
+    //
+    // 新逻辑（用户定稿的"方案 D"）：她**今天真实遇到的事**（世界引擎写的流水）+ 她今天的**冲动** + 冷却。
+    //   ① 每件流水事有一个"可能提起"的时间窗 = 事发时刻 ~ +35 分钟；
+    //   ② 要不要说这件事，**当天掷一次骰子定死**（不是每分钟重掷，否则变成抽奖机）；
+    //   ③ 说过一条之后，冷却 60±30 分钟（即实际 30~90 分钟，随机）——只防连发，不是配额；
+    //   ④ "最多几条"只是天花板，不再需要发满。
+    if (maxPokes > 0 && s.pokes < maxPokes) {
+      const flow = Array.isArray(cfg.flow) ? cfg.flow : [];
+      s.usedFlow = s.usedFlow || {};
+      const coolMin = 60 + this._jitterFor('cool' + s.pokes, now, 30); // 30 ~ 90 分钟
+      const sinceLast = s.lastPokeAt ? (now.getTime() - s.lastPokeAt) / 60000 : 9999;
+      const impulse = this._impulse(cfg); // 0~1：她今天有多想说话
+      for (let i = 0; i < flow.length; i++) {
+        if (s.usedFlow[i]) continue;
+        const at = hm(flow[i] && flow[i].time);
+        if (!isFinite(at)) continue;
+        if (cur < at || cur > at + 35) continue; // 不在"刚发生完"的窗口里
+        // 这件事今天要不要说：用 (日期 + 序号) 定死，同一天反复 tick 结果一致
+        const roll = this._unitFor('say' + i, now);
+        // 今天不想说这件事 → 记下来，继续看下一件（不能 break：那样第一件不想说就再也不会看后面的）
+        if (roll > impulse) { s.usedFlow[i] = -1; this._save(s); continue; }
+        if (sinceLast < coolMin) {
+          skip('poke', '她还有件事想说，但刚发过一条（冷却 ' + Math.round(coolMin) + ' 分钟）');
+          break;
+        }
+        // 世界引擎说了"她大概什么时候想找他" → 差得太远就先不主动（她开庭/上班时不会来找你）
+        const pAt = this._parseProactiveAt(cfg.proactiveAt);
+        if (pAt != null) {
+          const raw = Math.abs(cur - pAt);
+          if (Math.min(raw, 1440 - raw) > 90) { skip('poke', '今天这个点她还不想说话（世界引擎说大概 ' + cfg.proactiveAt + '）'); break; }
+        }
+        await doSend('poke', { flowItem: flow[i], flowIndex: i });
         s.pokes += 1;
-        s.pendingSince = Date.now(); // 日常分享期待回应 → 触发"等急了"链
+        s.usedFlow[i] = Date.now();
+        s.lastPokeAt = now.getTime();
+        s.pendingSince = Date.now(); // 分享了期待回应 → 触发"等急了"链
         this._save(s);
+        break;
+      }
+      // 全部流水都处理过 → 写明今天就是这样了（不黑盒）
+      if (!sent.length && flow.length && flow.every((_, i) => s.usedFlow[i])) {
+        skip('poke', '今天想说的都说过了（她今天的生活就这几件事）');
       }
     } else if (maxPokes === 0 && !s.claimedPokesOff) {
       s.claimedPokesOff = true;
@@ -315,7 +430,7 @@ await doSend('night'); s.night = true; Object.assign(s, this.bedtimeFields(now, 
     }
 
     // ── 等急了：发了期待回应的消息后主人一直没回（受关系阶段与安静时段约束）──
-    if (maxNudges > 0 && s.pendingSince && s.nudges < maxNudges && !quiet) {
+    if (maxNudges > 0 && s.pendingSince && s.nudges < maxNudges) {
       const waitedMin = (Date.now() - s.pendingSince) / 60000;
       if (waitedMin >= cfg.nudgeMinutes) {
         await doSend('nudge');

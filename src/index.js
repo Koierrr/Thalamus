@@ -40,7 +40,7 @@ import { ERRCODE_SESSION_EXPIRED } from './weixin-types.js';
 import { downloadMediaFromItem, uploadMediaToCdn } from './weixin-media.js';
 import { birthdayInfo } from './birthday.js';
 import { parseInboundText } from './inbound.js';
-import { proactiveLimit, toneForToday } from './soul.js';
+import { proactiveLimit, toneForToday, nowDoing, COMMON_SENSE } from './soul.js';
 import { inferJob, JOB_TYPES, guessJobType } from './job.js';
 import { formatTurnErrorReply, formatTurnNotification, shouldNotifySession, stripMarkup, findWorkspaceIdForSession, isWorkspaceMuted } from './notify.js';
 import { installModelSelection } from '@deepseek-ai/dsh-agent';
@@ -49,6 +49,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { ModelRouter, fetchModels, embedText } from './model-router.js';
 import { Soul } from './soul.js';
 import { MemoryEmbed } from './memory-embed.js';
+import { reviewReply as selfCheckReview } from './selfcheck.js';
 import { Life } from './life.js';
 import { MomentsWorkshop } from './moments.js';
 import os from 'node:os';
@@ -209,6 +210,9 @@ class WeixinBridgeService {
       return m.sidecarUrl || 'http://127.0.0.1:43122';
     });
     this._memEngineSpawned = false;
+    this._memEngineWasUp = false;
+    this._memRestarting = false;
+    this._svcLastJson = '';
     this._wxautoCounts = null;
     this.soul = new Soul({
       dir: this.companionDir,
@@ -596,7 +600,8 @@ class WeixinBridgeService {
     // tab's allowlist card ("已对话过的 ID") — that conversation is the only
     // way to discover these ids.
     if (this._modelConfig().paused) return; // 全局急停：她立刻安静，不再回复任何人
-    if (this._modelConfig().ownerPeerId !== peer && this._inQuietHours(new Date())) return; // 安静时段：她只理主人
+    // 非主人：她睡着时一个字都不回（2026-09-13：睡眠窗口取代了旧的「安静时段」）
+    if (this._modelConfig().ownerPeerId !== peer && this.life && this.life.isAsleepNow(new Date(), { wake: (this.today() || {}).wake, sleep: (this.today() || {}).sleep })) return;
     if (this._modelConfig().ownerPeerId === peer) this.life.noteOwnerActivity(); // 主人来了，清掉"等急了"
     if (this._isBlocked(peer)) return;
     if (!this._allowedPeers().includes(peer) && !this._replyToAll()) {
@@ -733,15 +738,40 @@ class WeixinBridgeService {
     if (this._activity.length > 200) this._activity.length = 200;
   }
 
-  /** 安静时段（如 01:00-07:30）：她只在主人找她时才回 */
-  _inQuietHours(now) {
-    const s = String(this._modelConfig().quietHours || '').trim();
-    if (!/^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(s)) return false;
-    const toMin = (t) => { const p = t.split(':'); return Number(p[0]) * 60 + Number(p[1]); };
-    const parts = s.split('-');
-    const A = toMin(parts[0]); const B = toMin(parts[1]);
-    const cur = now.getHours() * 60 + now.getMinutes();
-    return A <= B ? (cur >= A && cur < B) : (cur >= A || cur < B);
+  /**
+   * 她这次要不要回（2026-09-13 加，用户明确要求）。
+   * 用户原话："有的时候我发的消息不是一定要回的，可能她觉得没必要回、或者不想回、或者晚点回。"
+   * 规则：社交电量低 / 心情差 / 正忙（工作日的工作时段）→ 更容易"已读不回"或"晚点回"。
+   * 护栏：连续不回最多 1 次（否则你会以为她坏了）；依恋强度放低"不回"的概率（越黏你越不会不理你）。
+   */
+  _replyPolicy(today, persona) {
+    const batt = Number((today && today.battery) == null ? 60 : today.battery);
+    const mood = Number((today && today.mood) == null ? 60 : today.mood);
+    const job = (today && today.job) || {};
+    const busy = !!(today && today.busyDay) || (job.workday === true && job.type && job.type !== 'none');
+    const traits = (persona && persona.traits) || {};
+    const att = traits.attachment == null ? 50 : Number(traits.attachment);
+    let pSkip = 0.06 + (busy ? 0.14 : 0) + (batt < 40 ? 0.16 : 0) + (mood < 40 ? 0.12 : 0) - att / 1000;
+    pSkip = Math.max(0, Math.min(0.45, pSkip));
+    let pLater = 0.1 + (busy ? 0.22 : 0) + (batt < 50 ? 0.12 : 0);
+    pLater = Math.max(0, Math.min(0.55, pLater));
+    if ((this._skipStreak || 0) >= 1) pSkip = 0;
+    const r = Math.random();
+    if (r < pSkip) {
+      return { mode: 'skip', reason: busy ? '她在忙（' + (job.label || job.type) + '）' : (batt < 40 ? '今天电量见底，不想说话' : '心情不太好，这条先不回') };
+    }
+    if (r < pSkip + pLater) {
+      const mins = 3 + Math.round(Math.random() * 17);
+      return { mode: 'later', delayMs: mins * 60000, reason: (busy ? '在忙，' + mins + ' 分钟后再回' : '手上有点事，' + mins + ' 分钟后再回') };
+    }
+    return { mode: 'now', reason: '' };
+  }
+
+  /** 她现在是不是睡着（2026-09-13 起：不再有单独的「安静时段」，直接用她今天的作息） */
+  _isAsleepNow(now) {
+    if (!this.life || typeof this.life.isAsleepNow !== 'function') return false;
+    const t = this.today() || {};
+    return this.life.isAsleepNow(now || new Date(), { wake: t.wake, sleep: t.sleep });
   }
 
   // ---------- 生活系统（主动消息心跳） ----------
@@ -766,15 +796,23 @@ class WeixinBridgeService {
           .then(() => { this._worldBusy = false; });
       }
       const toneNow = toneForToday(this.world.state(), today);
+      const worldNow = this.world.state() || {};
+      const personaNow = this.soul.getPersona();
       const sent = await this.life.tick({
         soul: this._soulForLife(today),
         overrides: {
           wake: today.wake, sleep: today.sleep, pokesPerDay: today.activeToday,
-          // 关系阶段给的主动上限（刚认识就不该天天来找你）+ 安静时段（她不该打扰你的时间）
-          stageLimit: proactiveLimit(toneNow),
+          // 世界引擎给的主动上限（只能收紧"最多几条"，不再是配额）。
+          // 但早安/晚安**永远允许**（2026-09-13 用户拍板）：那是"她还活着"的基本盘，
+          // 世界引擎只准管"日常分享/催你"的次数，不准让她一整天不吭声。
+          stageLimit: { ...proactiveLimit(toneNow), morning: true, night: true },
           proactiveAt: toneNow.source === 'world' ? String(toneNow.proactiveAt || '') : '',
           insomnia: toneNow.source === 'world' ? toneNow.insomnia === true : false,
-          quietHours: String(cfg.quietHours || ''),
+          // 事件驱动分享要用的输入（2026-09-13 方案 D）：
+          flow: Array.isArray(worldNow.flow) ? worldNow.flow : [],   // 她今天真实经历的事
+          traits: (personaNow && personaNow.traits) || {},           // 发起力/依恋 → 她对谁都想说话的程度
+          battery: today.battery,                                    // 今天剩多少力气
+          mood: today.mood,
         },
         sendToOwner: (text) => this._sendToOwnerPeer(cfg.ownerPeerId, text),
       });
@@ -858,6 +896,13 @@ class WeixinBridgeService {
         store_path: path.join(this.companionDir, 'mem0-store'),
       };
       fs.writeFileSync(path.join(this.companionDir, 'memory-service.json'), JSON.stringify(svc, null, 2), 'utf8');
+      // 2026-09-13：配置**真的变了**就重启引擎（不只是 /reload）。
+      // 踩过的坑：上一批把"向量真打通"写进了 python，但引擎一直跑着旧进程，
+      // 后台改配置它也不读 → 功能白写。这里用配置指纹判断，变了就重启。
+      const svcJson = JSON.stringify(svc, null, 2);
+      const changed = svcJson !== this._svcLastJson;
+      this._svcLastJson = svcJson;
+      if (changed && this._memEngineWasUp) this._restartMemoryEngine('配置变了');
       const wx = {
         callback: 'http://127.0.0.1:43121/wechat-companion/panel/wxauto/in',
         peers: (cfg.channel && cfg.channel.wxautoPeers) || [],
@@ -917,12 +962,15 @@ class WeixinBridgeService {
     if (typeof b.replyToAll === 'boolean') out.replyToAll = b.replyToAll;
     if (Array.isArray(b.blocklist)) out.blocklist = b.blocklist.map((s) => String(s).trim().slice(0, 120)).filter(Boolean).slice(0, 200);
     if (typeof b.paused === 'boolean') out.paused = b.paused;
-    if (typeof b.quietHours === 'string') out.quietHours = b.quietHours.trim().slice(0, 40);
+    // 2026-09-13（决定 B2）：废弃「安静时段」——她的睡眠窗口直接由'她今天的 睡觉~起床'决定，
+    // 不再需要用户另配一段。老配置里残留的 quietHours 会被丢弃。
     if (b.behavior && typeof b.behavior === 'object') {
       const B = {};
       if (typeof b.behavior.voiceRate === 'number' && b.behavior.voiceRate >= 0 && b.behavior.voiceRate <= 1) B.voiceRate = b.behavior.voiceRate;
       if (['instant', 'human', 'slow'].includes(b.behavior.replySpeed)) B.replySpeed = b.behavior.replySpeed;
       if (Number.isInteger(b.behavior.chunkMax) && b.behavior.chunkMax >= 1 && b.behavior.chunkMax <= 8) B.chunkMax = b.behavior.chunkMax;
+      // 常识四层·第 4 层（发前自检）的开关，默认开
+      if (typeof b.behavior.selfCheck === 'boolean') B.selfCheck = b.behavior.selfCheck;
       if (Number.isInteger(b.behavior.contextRounds) && b.behavior.contextRounds >= 2 && b.behavior.contextRounds <= 100) B.contextRounds = b.behavior.contextRounds;
       // 手速倍率（越大越快；上轮打字太慢后加的后台可调项）
       if (typeof b.behavior.talkiness === 'number' && isFinite(b.behavior.talkiness) && b.behavior.talkiness >= 0 && b.behavior.talkiness <= 100) B.talkiness = Math.round(b.behavior.talkiness);
@@ -1065,7 +1113,7 @@ class WeixinBridgeService {
     });
   }
 
-  async _driveSoulOnce(accountId, creds, peer, chatId, text, content) {
+  async _driveSoulOnce(accountId, creds, peer, chatId, text, content, opts = {}) {
     const contextToken = this.store.getContextToken(accountId, peer);
     if (!contextToken) {
       this.ctx.logger?.warn?.('[wechat-companion] no context_token for ' + peer + '; cannot reply');
@@ -1076,14 +1124,57 @@ class WeixinBridgeService {
     const mediaCount = content.filter((c) => c.type !== 'text').length;
           const hitCatchup = isOwner && this.life && this.life.consumeMorningCatchup ? this.life.consumeMorningCatchup() : false;
       // 她真的睡着了（夜间三态）：不回消息、不消耗模型，只记一笔；第二天早上她会自己提
-      const np = this.life && this.life.nightPhase ? this.life.nightPhase(new Date()) : 'awake';
+      const _t0 = this.today() || {};
+      const np = this.life && this.life.nightPhase ? this.life.nightPhase(new Date(), { wake: _t0.wake, sleep: _t0.sleep }) : 'awake';
       if (np === 'asleep') {
         try { this.life.markSleptThrough(); } catch {}
         this.activity('[睡] 她已睡着，这条先不打扰她：' + String(text || '').slice(0, 30));
         return;
       }
+      // ── 醒着也不保证必回（2026-09-13，用户要求："我发的消息不是一定要回的"）──
+      // 睡着是硬状态（上面已挡）；这里是软状态：电量低 / 心情差 / 在忙 → 她可能不回，或晚点回。
+      // 铁律：绝不黑盒——每次不回都在实况直播写明原因；而且"连续不回"最多 1 次（免得像坏了）。
+      if (!(opts && opts.forceReply)) {
+        const pol = this._replyPolicy(this.today(), this.soul.getPersona());
+        if (pol.mode === 'skip') {
+          this._skipStreak = (this._skipStreak || 0) + 1;
+          this.activity('[已读不回] 这次她没回你（' + pol.reason + '）');
+          this.ctx.logger?.info?.('[soul] 已读不回：' + pol.reason);
+          return;
+        }
+        if (pol.mode === 'later') {
+          this._skipStreak = 0;
+          this.activity('[已读不回] 这次她晚点回（' + pol.reason + '）');
+          setTimeout(() => {
+            void this._driveSoulOnce(accountId, creds, peer, chatId, text, content, { forceReply: true }).catch(() => {});
+          }, pol.delayMs);
+          return;
+        }
+        this._skipStreak = 0;
+      }
 const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, text, mediaCount, today: this.today(), world: this.world.state(), voiceRate: isOwner ? Number((cfg.behavior && cfg.behavior.voiceRate) || 0) : 0, nightPhase: np, morningCatchup: hitCatchup });
     if (out.thought) this.activity('[思考] ' + out.thought);
+    // ── 常识四层 · 第 4 层：发之前自检（2026-09-13，用户要求"4 加开关"）──
+    // 用便宜模型审一遍：跟她此刻的处境/作息/现实常识冲不冲突？冲突就按处境改写再发。
+    // 铁律：失败就原样发（绝不卡住她）；改写了必须在实况直播里写明原因。
+    // 开关住在「她→她怎么说话」的人设里（persona.behavior.selfCheck），_behavior() 已把 config 与 persona 合并
+    if ((this.soul._behavior() || {}).selfCheck !== false && out.chunks && out.chunks.length) {
+      try {
+        const situ = nowDoing(this.today(), this.world.state(), new Date()) + String.fromCharCode(10) + COMMON_SENSE;
+        const rv = await selfCheckReview({
+          chain: ((cfg.chain || {}).memory || []),
+          situation: situ, userText: text, reply: out.chunks.join(' '), timeoutMs: 12000,
+        });
+        if (rv && rv.ok === false && rv.fix) {
+          out.chunks = [rv.fix];
+          out.delaysMs = [Array.isArray(out.delaysMs) && out.delaysMs.length ? out.delaysMs[0] : 800];
+          this.activity('[常识自检] 改了一句不合处境的回复：' + (rv.reason || ''));
+          this.ctx.logger?.info?.('[selfcheck] 改写：' + (rv.reason || ''));
+        } else if (rv && rv.skipped) {
+          this.ctx.logger?.info?.('[selfcheck] 跳过：' + (rv.reason || ''));
+        }
+      } catch (err) { this.ctx.logger?.warn?.('[selfcheck] 异常（原样发）: ' + (err && err.message)); }
+    }
     for (let i = 0; i < out.chunks.length; i++) {
       const delay = i < out.delaysMs.length ? out.delaysMs[i] : 800;
       await sleep(delay);
@@ -1172,61 +1263,111 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
     void this.soul.recordConversation({ peerKey: 'wxauto:' + peer, isOwner, userText: text, herTexts: out.chunks }).catch(() => {});
   }
 
-  /** 记忆引擎 sidecar 自检：启动先写配置（消灭"引擎先于配置"空窗），没在跑就拉起，日志落盘 */
+  /** 起一个记忆引擎进程（内部用；不等待就绪） */
+  _spawnMemoryEngine() {
+    try {
+      const sys = this._modelConfig().system || {};
+      const py = String(sys.pythonPath || 'python');
+      const script = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'python', 'memory_service.py');
+      const logPath = path.join(this.companionDir, 'mem-engine.log');
+      const out = fs.openSync(logPath, 'a');
+      const child = spawn(py, [script], {
+        detached: true, stdio: ['ignore', out, out], windowsHide: true,
+        env: { ...process.env, MEMORY_SERVICE_CONFIG: path.join(this.companionDir, 'memory-service.json') },
+      });
+      this._memEngineSpawned = true;
+      try { child.unref(); } catch { /* noop */ }
+      this.ctx.logger?.info?.('[wechat-companion] 已拉起 mem0 记忆引擎 (' + py + ')，日志: ' + logPath);
+      return true;
+    } catch (err) {
+      this.ctx.logger?.warn?.('[wechat-companion] 记忆引擎拉起失败（可用 启动记忆引擎.bat 手动启动）: ' + err.message);
+      return false;
+    }
+  }
+
+  /**
+   * 重启记忆引擎（2026-09-13 加）。
+   * 为什么必须有：插件启动时若发现引擎已在跑就"复用"，永远不会重启它 →
+   * **改了 python 代码 / 改了向量配置，引擎却一直跑旧的**。
+   * 上一批的"向量真打通 + 维度护栏"就是这么白写的（后台显示已保存，实际不生效）。
+   */
+  async _restartMemoryEngine(reason) {
+    if (this._memRestarting) return false;
+    this._memRestarting = true;
+    try {
+      const memUrl = String((this._modelConfig().memory || {}).sidecarUrl || 'http://127.0.0.1:43122').replace(/\/+$/, '');
+      this.ctx.logger?.info?.('[wechat-companion] 记忆引擎重启中（' + reason + '）…');
+      // ① 让旧进程体面退出（老版本没有 /quit，退出失败也无所谓，下面新进程会顶掉端口）
+      try {
+        await fetch(memUrl + '/quit', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(5000) });
+      } catch { /* 旧进程可能本来就没跑，或版本太旧没有 /quit */ }
+      for (let i = 0; i < 12; i++) { await sleep(500); const h = await this.memClient.health(); if (!h) break; }
+      // ② 起新的
+      try { this.soul._engineCache = null; } catch { /* noop */ }
+      this._spawnMemoryEngine();
+      // ③ 等它就绪
+      for (let i = 0; i < 20; i++) {
+        await sleep(1000);
+        const h = await this.memClient.health();
+        if (h && h.ready) {
+          this._memEngineWasUp = true;
+          try { this.soul._engineCache = { ok: true, at: Date.now(), info: h }; } catch { /* noop */ }
+          this.ctx.logger?.info?.('[wechat-companion] 记忆引擎已重启并就绪: 向量 ' + (h.embedder || '?') + ' / 提炼 ' + (h.llm || '?'));
+          return true;
+        }
+      }
+      this.ctx.logger?.warn?.('[wechat-companion] 记忆引擎重启后仍未就绪（看 mem-engine.log）');
+      return false;
+    } finally {
+      this._memRestarting = false;
+    }
+  }
+
+  /** 旧 JSON 记忆 → mem0 的一次性补迁（幂等；只在没迁过时跑） */
+  async _autoMigrateLegacyMemory() {
+    try {
+      const cfgNow = this._modelConfig();
+      if (cfgNow.memoryLegacyMigrated) return;
+      const pending = (this.soul.getMemories().entries || []).filter((e) => !e.mid);
+      if (pending.length) {
+        const r = await this.soul.migrateLegacyMemory();
+        this.activity('[记忆] 旧记忆补迁 mem0: ' + r.added + ' 条（跳过重复 ' + (r.skipped || 0) + '）');
+        this.ctx.logger?.info?.('[wechat-companion] 旧记忆补迁: ' + r.added + '/' + r.total);
+      }
+      this._writeCompanionConfig({ ...cfgNow, memoryLegacyMigrated: true });
+    } catch (err) {
+      this.ctx.logger?.warn?.('[wechat-companion] 旧记忆补迁失败(下轮再试): ' + err.message);
+    }
+  }
+
+  /** 记忆引擎 sidecar 自检：启动先写配置（消灭"引擎先于配置"空窗），拉起/重启，日志落盘 */
   async _ensureMemoryEngine() {
     try {
       const cfg0 = this._modelConfig();
       const sys = cfg0.system || {};
       if (sys.autoStartEngine === false) return;
       this._syncSidecarConfigs(cfg0);
-      const h = await this.memClient.health();
-      if (h && h.ready) {
-        this.ctx.logger?.info?.('[wechat-companion] mem0 记忆引擎已就绪: ' + (h.engine || 'mem0') + ' / ' + (h.llm || 'llm?'));
-        return;
-      }
-      if (h && !h.ready) {
-        this.ctx.logger?.warn?.('[wechat-companion] 记忆引擎在跑但未就绪: ' + (h.reason || '未配置') + '（保存模型配置后 1 分钟内自动恢复）');
-        return;
-      }
-      if (this._memEngineSpawned) return;
-      this._memEngineSpawned = true;
-      const py = String(sys.pythonPath || 'python');
-      const script = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'python', 'memory_service.py');
-      const logPath = path.join(this.companionDir, 'mem-engine.log');
-      try {
-        const out = fs.openSync(logPath, 'a');
-        spawn(py, [script], {
-          detached: true, stdio: ['ignore', out, out], windowsHide: true,
-          env: { ...process.env, MEMORY_SERVICE_CONFIG: path.join(this.companionDir, 'memory-service.json') },
-        }).unref();
-        this.ctx.logger?.info?.('[wechat-companion] 已尝试拉起 mem0 记忆引擎 (' + py + ')，日志: ' + logPath);
-      } catch (err) {
-        this.ctx.logger?.warn?.('[wechat-companion] 记忆引擎拉起失败（可用 启动记忆引擎.bat 手动启动）: ' + err.message);
-      }
-      for (let i = 0; i < 15; i++) {
-        await sleep(2000);
-        const h2 = await this.memClient.health();
-        if (h2 && h2.ready) {
-          this.ctx.logger?.info?.('[wechat-companion] mem0 记忆引擎已就绪（自动拉起成功）');
-          this.soul._engineCache = { ok: true, at: Date.now(), info: h2 };
-          // 旧JSON记忆自动迁移（幂等：服务端按文本去重；标记防重复跑）
-          try {
-            const cfgNow = this._modelConfig();
-            if (!cfgNow.memoryLegacyMigrated) {
-              const pending = (this.soul.getMemories().entries || []).filter((e) => !e.mid);
-              if (pending.length) {
-                const r = await this.soul.migrateLegacyMemory();
-                this.activity('[记忆] 旧记忆自动迁移 mem0: ' + r.added + ' 条（跳过重复 ' + (r.skipped || 0) + '）');
-                this.ctx.logger?.info?.('[wechat-companion] 旧记忆自动迁移: ' + r.added + '/' + r.total);
-              }
-              this._writeCompanionConfig({ ...cfgNow, memoryLegacyMigrated: true });
-            }
-          } catch (err) {
-            this.ctx.logger?.warn?.('[wechat-companion] 旧记忆自动迁移失败(下轮再试): ' + err.message);
+      const h0 = await this.memClient.health();
+      if (h0) {
+        if (h0.ready) this._memEngineWasUp = true;
+        // 2026-09-13 改：**启动时总是重启一次**，保证引擎跑的是当前的 python 代码 + 当前配置。
+        // （旧行为"已在跑就复用"会让改了 python 也永远不生效——这次踩过。）
+        const ok = await this._restartMemoryEngine('插件启动');
+        if (!ok) return;
+      } else {
+        if (!this._spawnMemoryEngine()) return;
+        for (let i = 0; i < 15; i++) {
+          await sleep(2000);
+          const h2 = await this.memClient.health();
+          if (h2 && h2.ready) {
+            this._memEngineWasUp = true;
+            try { this.soul._engineCache = { ok: true, at: Date.now(), info: h2 }; } catch { /* noop */ }
+            this.ctx.logger?.info?.('[wechat-companion] mem0 记忆引擎已就绪（自动拉起成功）');
+            break;
           }
-          break;
         }
       }
+      await this._autoMigrateLegacyMemory();
     } catch (err) {
       this.ctx.logger?.warn?.('[wechat-companion] 记忆引擎自检失败: ' + (err && err.message));
     }
@@ -1760,10 +1901,22 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
   }
 
   /** 给生活调度器用的 soul 包装：主动消息也要知道"今天几点、今天的她、她的世界" */
+  /** 主人的完整会话 key（accountId:peer）——取聊天记录要用它（主动消息 2026-09-13 起带上下文） */
+  _ownerPeerKey(cfg = this._modelConfig()) {
+    const peer = String(cfg.ownerPeerId || '');
+    if (!peer) return 'owner';
+    try {
+      const acct = this.store.listAccounts().find((a) => a.enabled === 1 && a.token);
+      if (acct && acct.accountId) return acct.accountId + ':' + peer;
+    } catch { /* 取不到账号就退回裸 peer */ }
+    return peer;
+  }
+
   _soulForLife(today) {
     const self = this;
+    const ownerKey = this._ownerPeerKey();
     return {
-      proactive: (kind, extra = {}) => self.soul.proactive(kind, { ...extra, today, world: self.world.state() }),
+      proactive: (kind, extra = {}) => self.soul.proactive(kind, { ...extra, today, world: self.world.state(), peerKey: ownerKey }),
     };
   }
 
@@ -1860,7 +2013,7 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
     try {
       const traits = (this.soul?.getPersona() || {}).traits || {};
       out = applyDayEvent(this.companionDir, kind, traits, { note, intensity: k });
-      if (out) this.ctx.logger?.info?.('[wechat-companion] 今日六维浮动「' + out.label + '」 ' + JSON.stringify(out.applied));
+      if (out && !out.skipped) this.ctx.logger?.info?.('[wechat-companion] 今日六维浮动「' + out.label + '」 ' + JSON.stringify(out.applied));
     } catch (err) { this.ctx.logger?.warn?.('[wechat-companion] day event failed: ' + err.message); }
     return out;
   }
@@ -2413,6 +2566,21 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
       if (req.method === 'GET' && path === 'panel/portrait') {
         return send(200, { ok: true, portrait: (this.world.state() || {}).portrait || '' });
       }
+      if (req.method === 'GET' && path === 'panel/past') {
+        // 她的过去（2026-09-13 决定 C3）：完全由世界引擎生成与推进，后台**只读**
+        const P0 = this.soul.getPersona();
+        return send(200, { ok: true, past: (P0.profile || {}).past || {}, readOnly: true });
+      }
+      if (req.method === 'POST' && path === 'panel/past/regen') {
+        // 不满意就重点一下：清空 → 立刻让世界引擎重编一份（异步，约 10~30 秒）
+        const P0 = this.soul.getPersona();
+        this.soul.savePersona({ profile: { ...(P0.profile || {}), past: {} } });
+        this._worldBusy = true;
+        void this.world.generate({ persona: this.soul.getPersona(), today: this.today(), memories: (this.soul.getMemories().entries || []).slice(-12) })
+          .then(() => { this._worldBusy = false; this.activity('[世界] 重新生成了她的过去'); })
+          .catch((e) => { this._worldBusy = false; this.ctx.logger?.warn?.('[world] 重新生成过去失败: ' + e.message); });
+        return send(200, { ok: true, note: '正在让她重新长一份过去，约 10~30 秒后刷新这一页' });
+      }
       if (req.method === 'GET' && path === 'panel/diary/days') {
         // 已留档的日期（新→旧）：后台「世界 → 她的日记」的月历据此点亮
         return send(200, { ok: true, days: this.world.diaryDays() });
@@ -2699,6 +2867,13 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
         const h = await this.memClient.health();
         return send(200, { ok: true, running: !!h, info: h });
       }
+      if (req.method === 'POST' && path === 'panel/mem-engine/restart') {
+        // 手动重启记忆引擎：改了向量配置/维度、或者引擎卡住时用（2026-09-13 加）
+        const ok = await this._restartMemoryEngine('用户点了重启');
+        const h = await this.memClient.health();
+        this.activity('[记忆] 手动重启记忆引擎：' + (ok ? '成功' : '未就绪'));
+        return send(200, { ok: true, restarted: ok, running: !!h, info: h });
+      }
       if (req.method === 'GET' && path === 'panel/features') {
         return send(200, { ok: true, groups: featureGroups(), items: FEATURE_STATUS });
       }
@@ -2744,7 +2919,7 @@ const out = await this.soul.reply({ peerKey: accountId + ':' + peer, isOwner, te
         const body = await readBody();
         const op = String(body.op || '');
         if (op === 'add') {
-          await this.soul.addMemory({ who: String(body.who || ''), text: String(body.text || ''), importance: Number(body.importance) || 3, tags: Array.isArray(body.tags) ? body.tags : [], pinned: !!body.pinned });
+          await this.soul.addMemory({ who: String(body.who || ''), cat: String(body.cat || ''), text: String(body.text || ''), importance: Number(body.importance) || 3, tags: Array.isArray(body.tags) ? body.tags : [], pinned: !!body.pinned });
         } else if (op === 'edit') {
           await this.soul.editMemory(String(body.id || ''), body.patch || {});
         } else if (op === 'delete') {

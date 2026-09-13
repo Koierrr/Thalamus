@@ -15,7 +15,8 @@ const block = idx.slice(start, end === -1 ? undefined : end);
 const keys = new Set();
 for (const m of block.matchAll(/[A-Za-z_$][\w$]*\.([A-Za-z_$][\w$]*)\s*=/g)) keys.add(m[1]);
 for (const m of block.matchAll(/b\.([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)) { keys.add(m[1]); keys.add(m[2]); }
-for (const k of ['enabled', 'paused', 'replyToAll', 'ownerPeerId', 'blocklist', 'quietHours']) keys.add(k);
+// quietHours 已于 2026-09-13 删除（睡眠窗口统一用她今天的作息，不再单配时段）
+for (const k of ['enabled', 'paused', 'replyToAll', 'ownerPeerId', 'blocklist']) keys.add(k);
 
 // 全量源码（排除白名单块自身）
 const files = fs.readdirSync(path.join(root, 'src')).filter((f) => f.endsWith('.js'));

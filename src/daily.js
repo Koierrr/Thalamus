@@ -186,9 +186,11 @@ const DAY_EVENT = {
   rude: { label: '被凶/被怼', d: { socialBattery: -4, warmth: -3, sharpness: 2 }, mod: (T) => 0.7 + (T.attachment == null ? 50 : T.attachment) / 160 },
   conflict: { label: '吵架/冲突', d: { warmth: -4, sharpness: 3, socialBattery: -3 }, mod: (T) => 0.7 + (T.sharpness == null ? 50 : T.sharpness) / 160 },
   ignored: { label: '被冷落（她催你没人回）', d: { attachment: 3, warmth: -2, socialBattery: -2 }, mod: (T) => 0.7 + (T.attachment == null ? 50 : T.attachment) / 160 },
-  work: { label: '被工作压垮', d: { socialBattery: -5, initiative: -2, warmth: -1 }, mod: (T) => 0.7 + (T.orderliness == null ? 50 : (100 - T.orderliness)) / 160 },
-  rest: { label: '睡得好/缓过来了', d: { socialBattery: 5, warmth: 2, sharpness: -1 } },
-  good: { label: '今天过得不错', d: { warmth: 2, initiative: 2, socialBattery: 2 } },
+  work: { label: '被工作压垮', d: { socialBattery: -5, initiative: -2, warmth: -1 }, once: true, mod: (T) => 0.7 + (T.orderliness == null ? 50 : (100 - T.orderliness)) / 160 },
+  // ⚠️ once:true = 一天只算一次。下面 rest 原先漏了这个标记 → 心跳（每 60 秒一跳）每跳加一次，
+  // 20 分钟就把社交电量/温度顶到 +15 上限（2026-09-13 用户实测：她"突然变得话多又热情"就是它）。
+  rest: { label: '睡得好/缓过来了', d: { socialBattery: 5, warmth: 2, sharpness: -1 }, once: true },
+  good: { label: '今天过得不错', d: { warmth: 2, initiative: 2, socialBattery: 2 }, once: true },
 };
 
 /** 事件中文名（后台展示用） */
@@ -205,6 +207,13 @@ export function applyDayEvent(companionDir, kind, traits = {}, opts = {}) {
   let st = null;
   try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
   if (!st || !st.date) return null;
+  // 一天只算一次的事件（rest/good/work）：记在当天的 dayEvents 里，重复调用直接忽略。
+  // 为什么必须在这里挡：调用方是"每 60 秒一跳"的心跳，而它的语义是"今天发生了一次这件事"。
+  // daily-state.json 每天由 todayState 重新生成，所以 dayEvents 天然每天清零。
+  if (spec.once) {
+    const done = (st.dayEvents && st.dayEvents[kind]) || 0;
+    if (done) return { applied: {}, label: spec.label, traitDrift: st.traitDrift || {}, battery: st.battery, skipped: true, reason: '今天已经算过「' + spec.label + '」了' };
+  }
   const mult = (spec.mod ? spec.mod(traits) : 1) * (opts.intensity == null ? 1 : opts.intensity);
   const dr = { ...(st.traitDrift || {}) };
   const applied = {};
@@ -215,6 +224,7 @@ export function applyDayEvent(companionDir, kind, traits = {}, opts = {}) {
     applied[k] = delta;
   }
   st.traitDrift = dr;
+  if (spec.once) st.dayEvents = { ...(st.dayEvents || {}), [kind]: Date.now() };
   const log = Array.isArray(st.driftReasons) ? st.driftReasons.slice(-19) : [];
   log.push({ at: Date.now(), kind, label: spec.label, deltas: applied, note: String(opts.note || '').slice(0, 60) });
   st.driftReasons = log;

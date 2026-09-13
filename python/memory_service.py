@@ -325,7 +325,11 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         b = self._body()
         try:
-            m, err, _ = get_memory()
+            # 2026-09-13 修（关键）：这里以前是 `m, err, _ = get_memory()`，把第三个返回值 cfg 丢掉了。
+            # 而 /add 的"主力失败→换回落槽"重试要用它（len(_llm_candidates(cfg))），
+            # 于是**每一次写记忆都抛 NameError: name 'cfg' is not defined**：
+            # 手写的记忆、她的生活流水全进不了引擎，只落在本地 JSON，后台列表永远是 0 条。
+            m, err, cfg = get_memory()
             if m is None:
                 return self._send(500, {'ok': False, 'error': err})
             if path == '/debug-embed':
@@ -478,6 +482,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/reload':
                 get_memory(force_reload=True)
                 return self._send(200, {'ok': True})
+            if path == '/quit':
+                # 2026-09-13 加：让插件能"重启记忆引擎"。
+                # 为什么需要：插件启动时若发现引擎已在跑就直接复用（不会重启它），
+                # 于是**改了 python 代码 / 改了向量配置，引擎却一直跑旧的**——上一批的
+                # "向量真打通 + 维度护栏"就这么白写了。现在给一个体面的退出入口。
+                self._send(200, {'ok': True, 'bye': True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
             return self._send(404, {'ok': False, 'error': 'unknown endpoint'})
         except Exception as e:  # noqa: BLE001
             return self._send(500, {'ok': False, 'error': str(e)})

@@ -142,7 +142,8 @@ for (const tab of hooks.TABS) {
 }
 
 // ---------- 分区结构断言（每个已铺开的页签） ----------
-const EXPECT = { home: 4, persona: 7, world: 7, relation: 3, memory: 4, brain: 3, nwa: 5, ops: 4 };
+// 世界页 7 → 6：2026-09-13 用户定稿删掉「她眼中的你」那一栏（画像只在日记存档里看）
+const EXPECT = { home: 4, persona: 7, world: 6, relation: 3, memory: 4, brain: 3, nwa: 5, ops: 4 };
 for (const tabId of Object.keys(EXPECT)) {
   fetchLog.length = 0; alertLog.length = 0;
   hooks.go(tabId);
@@ -165,7 +166,9 @@ for (const tabId of Object.keys(EXPECT)) {
 }
 
 // ---------- 内容完整性：每个页签都必须真的有字段/卡片（防"被别的页清空"这类竞态回归） ----------
-const MUST_HAVE_FIELDS = { home: 1, persona: 10, world: 3, relation: 2, memory: 5, brain: 10, nwa: 3, ops: 5 };
+// 世界页的字段数从 3 降到 1 是预期变化：她的过去改成只读展示（不再产生表单字段），
+// 那一页剩下唯一要填的就是「立刻生成一次世界」的"生成哪一天"。
+const MUST_HAVE_FIELDS = { home: 1, persona: 10, world: 1, relation: 2, memory: 5, brain: 10, nwa: 3, ops: 5 };
 for (const tabId of Object.keys(MUST_HAVE_FIELDS)) {
   hooks.go(tabId);
   await new Promise((r) => setTimeout(r, 60));
@@ -257,10 +260,20 @@ for (const tabId of Object.keys(EXPECT)) {
   ok(!/itemBlock\('他是谁/.test(html) && !relTxt.includes('他是谁'), '「他是谁」条目已删除（她从零认识你）');
 
   // ⑦ 画像只能由世界引擎写：后台只读、没有手改按钮
-  ok(/pi\.readOnly=true/.test(html), '画像输入框是只读的');
+  ok(!/itemBlock\('她眼中的你（画像）'/.test(html), 'D1 世界页不再有「她眼中的你」独立栏（画像只在日记存档里看）');
+  ok(/## 🪞 她眼中的你（画像）/.test(fs.readFileSync(path.join(root, 'src/world-engine.js'), 'utf8')), 'D1 但画像仍然写进日记存档（没丢，只是不再重复占一栏）');
   const worldTxt = await txtOf('world');
-  ok(!/保存画像/.test(worldTxt), '画像不再有手改按钮（免得被当晚重写＝白改）');
-  ok(/只能由世界引擎写/.test(worldTxt), '画像旁边写清了它只能由世界引擎写');
+  ok(!/保存画像/.test(worldTxt), 'D1 画像不再有手改按钮（免得被当晚重写＝白改）');
+
+  // ⑦b 记忆分类（2026-09-13 用户报"记忆分类不生效"）：
+  //     正因＝芯片按旧的 e.who 生成「通用/她自己的话」，而筛选比的是新分类名，两边永远对不上。
+  const memTxt2 = await txtOf('memory');
+  ok(/(^|\n)我\(\d+\)/.test(memTxt2) && /她\(\d+\)/.test(memTxt2), '记忆页的分类芯片用的是三类「我 / 她 / 世界」');
+  ok(!/通用\(\d+\)/.test(memTxt2) && !/关于我\(\d+\)/.test(memTxt2), '不再出现旧的分类标签（通用／她自己的话／关于我）');
+  ok(/归属/.test(memTxt2), '「教她记一件事」有「归属」选择（我/她/世界）');
+
+  ok(/她的过去 · 分层/.test(worldTxt) && /世界引擎自己长出来的 · 只读/.test(worldTxt), 'C3 世界页的「她的过去」是只读展示');
+  ok(/重新生成她的过去/.test(worldTxt), 'C3 有「重新生成她的过去」按钮');
 
   // ⑧ 世界页「她的日记」要有月历回看（以前只有最近一晚，她一写新的昨晚就没了）
   ok(/上一月/.test(worldTxt) && /下一月/.test(worldTxt), '她的日记上方有月历（可翻月）');
